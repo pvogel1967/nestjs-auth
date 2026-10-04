@@ -504,8 +504,9 @@ Releases are published by GitHub Actions only, never from a local machine:
 
 ---
 
-_The rest of this README is the original documentation by Ed Ropple,
-lightly updated for the new package name._
+_The rest of this README is the original documentation by Ed Ropple from
+[eropple/nestjs-auth](https://github.com/eropple/nestjs-auth), lightly updated
+for the new package name._
 
 ## Current Status ##
 > _Ed Ropple's status note from the original project, as of 0.6.x._
