@@ -1,3 +1,4 @@
+import type { ExecutionContext } from '@nestjs/common';
 import type { Request as ExpressRequest } from 'express';
 
 import { IdentifiedBillBase } from '../types.js';
@@ -12,6 +13,9 @@ export type PrincipalFn<TIdentifiedBill extends IdentifiedBillBase> = (
   headers: StringTo<string | Array<string> | undefined>,
   cookies: StringTo<string>,
   request: ExpressRequest,
+  // Lets credential sources that work from Nest's context (handler, class,
+  // transport) plug in without re-deriving it from the request.
+  context: ExecutionContext,
 ) => PrincipalFnRet<TIdentifiedBill> | Promise<PrincipalFnRet<TIdentifiedBill>>;
 
 export interface HttpAuthnOptions<TIdentifiedBill extends IdentifiedBillBase> {

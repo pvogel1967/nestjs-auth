@@ -122,12 +122,13 @@ export class HttpAuthxInterceptor<
 
   private async _doAuthn(
     request: ExpressRequest,
+    context: ExecutionContext,
   ): Promise<PrincipalFnRet<TIdentifiedBill>> {
     const headers = request.headers;
     // cookie@1 types values as possibly undefined, but parse() only returns keys it found.
     const cookies = cookieParse(headers.cookie || '') as StringTo<string>;
 
-    return this.options.authn.principalFn(headers, cookies, request);
+    return this.options.authn.principalFn(headers, cookies, request, context);
   }
 
   private _buildIdentity(authn: TIdentifiedBill | null) {
@@ -293,7 +294,7 @@ export class HttpAuthxInterceptor<
     }
 
     // BEGINNING AUTHN STEP
-    const authn = await this._doAuthn(request);
+    const authn = await this._doAuthn(request, context);
 
     // we should reject the request's credentials as invalid
     if (authn === false) {

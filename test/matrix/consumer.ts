@@ -1,11 +1,15 @@
 // Typical app wiring, type-checked against each NestJS major's own typings.
 // Copied into each matrix project by scripts/test-matrix.mjs.
 import 'reflect-metadata';
-import { Controller, Get, Module, Param, type INestApplication } from '@nestjs/common';
+import { Controller, Get, Injectable, Module, Param, type INestApplication } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import {
   AnonymousBill,
+  Authenticator,
   AuthnOptional,
+  AuthxModule,
+  AuthxRegistry,
+  type AuthxAuthenticator,
   AuthzScope,
   HttpAuthxInterceptor,
   IdentifiedBill,
@@ -14,6 +18,7 @@ import {
   objectFirstLogger,
   type IdentifiedExpressRequest,
   type RightsTree,
+  type StringTo,
 } from '@pvogel/nestjs-auth';
 
 class UserBill extends IdentifiedBill<{ id: number }, string> {}
@@ -70,3 +75,31 @@ export class AppModule {}
 export function register(app: INestApplication) {
   app.useGlobalInterceptors(createInterceptor(false));
 }
+
+// AuthxModule wiring: a discovered authenticator and a service adding its branch.
+type AppBill = UserBill;
+
+@Injectable()
+@Authenticator({ name: 'user', order: 10 })
+export class UserAuthenticator implements AuthxAuthenticator<AppBill> {
+  async authenticate(headers: StringTo<string | Array<string> | undefined>): Promise<AppBill | false | null> {
+    return typeof headers.authorization === 'string' ? new UserBill({ id: 1 }, headers.authorization, ['**/*']) : null;
+  }
+}
+
+@Injectable()
+export class WorkoutRights {
+  constructor(registry: AuthxRegistry<AppIdentity, AppBill>) {
+    registry.addToRightsTree('workouts', tree.children!.workouts);
+  }
+}
+
+@Module({
+  imports: [
+    AuthxModule.forRoot({ anonymousScopes: ['workouts/list'], logger: objectFirstLogger(pinoLike) }),
+    AuthxModule.forRootAsync({ useFactory: async () => ({ anonymousScopes: [], expectAuthenticators: ['user'] }) }),
+  ],
+  controllers: [WorkoutController],
+  providers: [UserAuthenticator, WorkoutRights],
+})
+export class ModuleWiredAppModule {}

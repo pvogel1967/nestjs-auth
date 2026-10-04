@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const lib = require('@pvogel/nestjs-auth');
+const { runModuleTests } = require('./module.cjs');
 const { runScenario, startApp } = require('./scenario.cjs');
 
 const nest = { common: require('@nestjs/common'), core: require('@nestjs/core') };
@@ -10,6 +11,8 @@ test('require() resolves the CommonJS build', () => {
 });
 
 test('CommonJS build against NestJS', t => runScenario(t, nest, lib));
+test('CommonJS build through AuthxModule', t => runScenario(t, nest, lib, { wiring: 'module' }));
+test('AuthxModule on the CommonJS build', t => runModuleTests(t, nest, lib));
 
 test('CommonJS interceptor accepts bills from the ESM build', async t => {
   const esm = await import('@pvogel/nestjs-auth');

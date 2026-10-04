@@ -25,6 +25,10 @@ otherwise it's a matter of changing the import path.
   resource, such as whether the `workoutId` in the URL belongs to the caller.
   Checks are ordinary async TypeScript functions, so there's no policy language
   or external service to run.
+- **Pluggable.** Each kind of caller (users, internal services, partners) gets
+  its own authenticator, and each feature adds its own branch of the rights
+  tree, from its own module. `AuthxModule` discovers them and checks the setup
+  at startup.
 - **Small and unopinionated.** You define what an identity is and how it's
   authenticated. ESM and CommonJS builds, any logger, and tests against NestJS
   10, 11 and 12. Express only.
@@ -34,15 +38,15 @@ otherwise it's a matter of changing the import path.
 pnpm add @pvogel/nestjs-auth
 ```
 
-Peer dependencies: `@nestjs/common` 10 or newer, `rxjs` 7 and `reflect-metadata`.
+Peer dependencies: `@nestjs/common` and `@nestjs/core` 10 or newer, `rxjs` 7 and
+`reflect-metadata`.
 
 ## Quick start ##
 The example below serves workouts to two kinds of caller: signed-in users, and
-internal services that hold their own least-privilege grants. It keeps each
-concern next to the code that owns it. A singleton registry holds the chain of
-authenticators and the rights tree; each authenticator plugs itself into the
-chain, and each feature service registers its own branch of the tree, from
-their constructors.
+internal services that hold their own least-privilege grants. `AuthxModule`
+installs the interceptor; each kind of caller gets an authenticator, and each
+feature service adds its own branch of the rights tree, all in their own
+modules.
 
 **1. Define your identities.**
 
@@ -73,93 +77,61 @@ export type AppRightsTree = RightsTree<AppIdentity>;
 `kind` lets TypeScript narrow an identity to the right principal type, and
 `isIdentified`/`isAnonymous` narrow out anonymous callers.
 
-**2. Create the registry.** An authenticator returns `null` when a request isn't
-its kind of caller, `false` when it is but the credentials are bad (a 401), or a
-bill. The registry asks them in ascending `order`.
+**2. Install `AuthxModule`.**
 
 ```ts
-// authx.registry.ts
-import { Global, Injectable, Module } from '@nestjs/common';
-import type { Request } from 'express';
-import type { StringTo } from '@pvogel/nestjs-auth';
-import type { AppIdentifiedBill, AppRightsTree } from './identity';
+// app.module.ts
+import { Module } from '@nestjs/common';
+import { AuthxModule } from '@pvogel/nestjs-auth';
+import { InternalServicesModule } from './internal-services.module';
+import { UsersModule } from './users.module';
+import { WorkoutsModule } from './workouts.module';
 
-export type AuthHeaders = StringTo<string | Array<string> | undefined>;
-export type Authenticator = (headers: AuthHeaders, request: Request) => Promise<AppIdentifiedBill | false | null>;
-
-@Injectable()
-export class AuthxRegistry {
-  private readonly authenticators: Array<{ name: string; order: number; authenticator: Authenticator }> = [];
-  private readonly roots: Record<string, AppRightsTree> = {};
-
-  /** The live tree: branches registered later are visible to the interceptor. */
-  readonly tree: AppRightsTree = { children: this.roots };
-
-  /**
-   * Lower `order` runs first. That's the precedence rule for a request carrying
-   * more than one kind of credential, so it's explicit rather than depending on
-   * the order NestJS happens to construct providers in.
-   */
-  addAuthenticator(name: string, order: number, authenticator: Authenticator) {
-    if (this.authenticators.some(entry => entry.name === name || entry.order === order)) {
-      throw new Error(`Authenticator '${name}', or one with order ${order}, is already registered`);
-    }
-    this.authenticators.push({ name, order, authenticator });
-    this.authenticators.sort((a, b) => a.order - b.order);
-  }
-
-  addToRightsTree(scopeRoot: string, branch: AppRightsTree) {
-    if (this.roots[scopeRoot]) {
-      throw new Error(`Rights tree already has a '${scopeRoot}' branch`);
-    }
-    this.roots[scopeRoot] = branch;
-  }
-
-  /**
-   * The first non-null answer wins, so a `false` (bad credentials) stops the
-   * chain; `null` from every authenticator means an anonymous caller.
-   */
-  async authenticate(headers: AuthHeaders, request: Request): Promise<AppIdentifiedBill | false | null> {
-    for (const { authenticator } of this.authenticators) {
-      const result = await authenticator(headers, request);
-      if (result !== null) {
-        return result;
-      }
-    }
-    return null;
-  }
-}
-
-@Global()
-@Module({ providers: [AuthxRegistry], exports: [AuthxRegistry] })
-export class AuthxModule {}
+@Module({
+  imports: [
+    AuthxModule.forRoot({
+      anonymousScopes: ['workouts/list'],
+      // fail at startup unless both are registered as providers somewhere in the app
+      expectAuthenticators: ['internal-service', 'user'],
+    }),
+    InternalServicesModule,
+    UsersModule,
+    WorkoutsModule,
+  ],
+})
+export class AppModule {}
 ```
 
-**3. Plug in an authenticator for each kind of caller.** Each one claims
-requests by its own header, but a single request can carry both. `order`
-decides those requests: the lowest-ordered authenticator that claims the
-request answers for it, and because `false` stops the chain, an invalid
-credential is never skipped in favor of a valid one further down. Here the
-internal-service authenticator (order 10) runs before the user one (order 20),
-so a bad service key fails the request even alongside a valid user token.
-Credentials further down the chain aren't examined once an authenticator has
-answered, so a valid service key alongside a bogus user token authenticates as
-the service.
+`forRootAsync()` takes `imports`, `inject` and `useFactory` (or `useClass`)
+when the options come from configuration.
+
+Authenticators don't need to be imported into or exported to `AuthxModule`: it
+finds them wherever they're declared. Each one just has to be listed in the
+`providers` of exactly one module the app loads. That can be its feature module,
+as below, or a single app-level module (say, `AppAuthxModule`) that declares all
+of them, as long as that module can inject each authenticator's dependencies.
+
+**3. Add an authenticator for each kind of caller.** An authenticator returns
+`null` when a request isn't its kind of caller, `false` when it is but the
+credentials are invalid (a 401), or a bill. `AuthxModule` discovers every
+`@Authenticator()` provider at startup and asks them in `order`: the first
+non-`null` answer wins, and `null` from all of them means an anonymous caller.
+`authenticate` receives the headers, parsed cookies, the request and the
+`ExecutionContext`; use whichever you need.
 
 ```ts
 // user.authenticator.ts
 import { Injectable } from '@nestjs/common';
-import { type AuthHeaders, AuthxRegistry } from './authx.registry';
-import { UserBill } from './identity';
+import { Authenticator, type AuthxAuthenticator, type StringTo } from '@pvogel/nestjs-auth';
+import { type AppIdentifiedBill, UserBill } from './identity';
 import { SessionService } from './session.service';
 
 @Injectable()
-export class UserAuthenticator {
-  constructor(registry: AuthxRegistry, private readonly sessions: SessionService) {
-    registry.addAuthenticator('user', 20, headers => this.authenticate(headers));
-  }
+@Authenticator({ name: 'user', order: 20 })
+export class UserAuthenticator implements AuthxAuthenticator<AppIdentifiedBill> {
+  constructor(private readonly sessions: SessionService) {}
 
-  private async authenticate(headers: AuthHeaders): Promise<UserBill | false | null> {
+  async authenticate(headers: StringTo<string | Array<string> | undefined>): Promise<UserBill | false | null> {
     const token = headers.authorization;
     if (typeof token !== 'string') {
       return null;
@@ -173,16 +145,28 @@ export class UserAuthenticator {
 }
 ```
 
+```ts
+// users.module.ts
+import { Module } from '@nestjs/common';
+import { SessionService } from './session.service';
+import { UserAuthenticator } from './user.authenticator';
+
+// SessionService stays private to this module; AuthxModule doesn't need it exported.
+@Module({ providers: [SessionService, UserAuthenticator] })
+export class UsersModule {}
+```
+
 Internal services authenticate with a per-service shared secret, and their
 grants come from the database, so a service's access can be tightened without a
-deploy:
+deploy. `InternalServicesModule` lists this authenticator, `InternalServicesConfig`
+and `ServiceScopeRepository` in its `providers`, just like `UsersModule`.
 
 ```ts
 // internal-service.authenticator.ts
 import { timingSafeEqual } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { type AuthHeaders, AuthxRegistry } from './authx.registry';
-import { InternalServiceBill } from './identity';
+import { Authenticator, type AuthxAuthenticator, type StringTo } from '@pvogel/nestjs-auth';
+import { type AppIdentifiedBill, InternalServiceBill } from './identity';
 import { InternalServicesConfig } from './internal-services.config';
 import { ServiceScopeRepository } from './service-scope.repository';
 
@@ -190,26 +174,22 @@ const SERVICE_NAME_HEADER = 'x-service-name';
 const SERVICE_KEY_HEADER = 'x-service-key';
 
 @Injectable()
-export class InternalServiceAuthenticator {
+@Authenticator({ name: 'internal-service', order: 10 })
+export class InternalServiceAuthenticator implements AuthxAuthenticator<AppIdentifiedBill> {
   constructor(
-    registry: AuthxRegistry,
     private readonly config: InternalServicesConfig,
     private readonly scopes: ServiceScopeRepository,
-  ) {
-    registry.addAuthenticator('internal-service', 10, headers => this.authenticate(headers));
-  }
+  ) {}
 
-  private async authenticate(headers: AuthHeaders): Promise<InternalServiceBill | false | null> {
+  async authenticate(
+    headers: StringTo<string | Array<string> | undefined>,
+  ): Promise<InternalServiceBill | false | null> {
     const serviceName = headers[SERVICE_NAME_HEADER];
     if (serviceName === undefined) {
       return null;
     }
     const key = headers[SERVICE_KEY_HEADER];
-    // Own properties only, so a name like `constructor` isn't mistaken for a known service.
-    const secret =
-      typeof serviceName === 'string' && Object.hasOwn(this.config.secrets, serviceName)
-        ? this.config.secrets[serviceName]
-        : undefined;
+    const secret = typeof serviceName === 'string' ? this.config.secrets[serviceName] : undefined;
     if (typeof serviceName !== 'string' || typeof key !== 'string' || !secret || !safeEqual(key, secret)) {
       return false;
     }
@@ -230,41 +210,68 @@ identity-provider group, and grant a user the union of the scopes for the groups
 in their token. Supporting another kind of caller means adding another
 authenticator; nothing else changes.
 
-**4. Register a branch from the service that owns the resource.**
+**4. Add a branch to the rights tree from the service that owns the resource.**
+The service keeps its branch as a private field next to the code it protects,
+and registers it from its constructor.
 
 ```ts
 // workouts.service.ts
 import { Injectable } from '@nestjs/common';
-import { AuthxRegistry } from './authx.registry';
-import { WorkoutRepository } from './workout.repository';
+import { AuthxRegistry } from '@pvogel/nestjs-auth';
+import type { AppIdentifiedBill, AppIdentity, AppRightsTree } from './identity';
+import { type Workout, WorkoutRepository } from './workout.repository';
 
 @Injectable()
 export class WorkoutsService {
-  constructor(registry: AuthxRegistry, private readonly workouts: WorkoutRepository) {
-    registry.addToRightsTree('workouts', {
+  #tree: AppRightsTree = {
+    children: {
+      // workouts/list
+      list: { right: () => true },
+    },
+    // workouts/<workoutId>/...
+    wildcard: {
+      // `context` loads what the rights below need, and can deny early; only a `right` can allow.
+      context: async (workoutId, req) => {
+        const workout = await this.workouts.findById(workoutId);
+        if (!workout) {
+          return false;
+        }
+        req.locals.workout = workout;
+        return true;
+      },
       children: {
-        // workouts/list
-        list: { right: () => true },
-      },
-      // workouts/<workoutId>/view
-      wildcard: {
-        // `context` can deny early; only a `right` can allow.
-        context: async (workoutId, req) => {
-          const identity = req.identity;
-          if (identity.isAnonymous) {
-            return false;
-          }
-          if (identity.kind === 'service') {
-            return true; // services are limited by their grants alone
-          }
-          return identity.principal.admin || (await this.workouts.ownerOf(workoutId)) === identity.principal.id;
+        // workouts/<workoutId>/view
+        view: {
+          right: (_scopePart, req) => {
+            const identity = req.identity;
+            const workout: Workout = req.locals.workout;
+            if (identity.isAnonymous) {
+              return false;
+            }
+            if (identity.kind === 'service') {
+              return true; // services are limited by their grants alone
+            }
+            return identity.principal.admin || workout.ownerId === identity.principal.id;
+          },
         },
-        children: { view: { right: () => true } },
       },
-    });
+    },
+  };
+
+  constructor(registry: AuthxRegistry<AppIdentity, AppIdentifiedBill>, private readonly workouts: WorkoutRepository) {
+    registry.addToRightsTree('workouts', this.#tree);
   }
 }
 ```
+
+The tree's functions run per request, so they can use the service's injected
+dependencies through `this`. A `context` that returns `false` for a resource
+that doesn't exist gives a 403, not a 404, so callers can't probe for IDs they
+aren't allowed to see.
+
+Write `AuthxRegistry<...>` in the constructor itself. A type alias for it
+compiles, but NestJS then sees the parameter's type as `Object` and can't inject
+it; use `@Inject(AuthxRegistry)` if you want an alias.
 
 **5. Decorate the controller.**
 
@@ -298,50 +305,6 @@ export class WorkoutsController {
 }
 ```
 
-**6. Install the interceptor globally.** It hands authentication to the
-registry's chain and authorization to its tree. The authenticators aren't
-injected anywhere; NestJS constructs every provider at startup, which is when
-they plug themselves in.
-
-```ts
-// app.module.ts
-import { Module } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-import { HttpAuthxInterceptor } from '@pvogel/nestjs-auth';
-import { AuthxModule, AuthxRegistry } from './authx.registry';
-import type { AppIdentifiedBill, AppIdentity } from './identity';
-import { InternalServiceAuthenticator } from './internal-service.authenticator';
-import { InternalServicesConfig } from './internal-services.config';
-import { ServiceScopeRepository } from './service-scope.repository';
-import { SessionService } from './session.service';
-import { UserAuthenticator } from './user.authenticator';
-import { WorkoutsModule } from './workouts.module';
-
-@Module({
-  imports: [AuthxModule, WorkoutsModule],
-  providers: [
-    InternalServicesConfig,
-    ServiceScopeRepository,
-    SessionService,
-    InternalServiceAuthenticator,
-    UserAuthenticator,
-    {
-      provide: APP_INTERCEPTOR,
-      inject: [AuthxRegistry],
-      useFactory: (registry: AuthxRegistry) =>
-        new HttpAuthxInterceptor<AppIdentity, AppIdentifiedBill>({
-          authn: {
-            principalFn: (headers, _cookies, request) => registry.authenticate(headers, request),
-            anonymousScopes: ['workouts/list'],
-          },
-          authz: { tree: registry.tree },
-        }),
-    },
-  ],
-})
-export class AppModule {}
-```
-
 The result, where the `billing` service's stored grants are `workouts/*/view`
 and the `reporting` service's are `workouts/list`:
 
@@ -352,20 +315,40 @@ and the `reporting` service's are `workouts/list`:
 | `GET /workouts/42`, invalid user token | 401 |
 | `GET /workouts/42`, user who doesn't own workout 42 | 403 (rights tree denies) |
 | `GET /workouts/42`, owner or admin | 200 |
+| `GET /workouts/99` (no such workout), as an admin | 403 (`context` denies; no 404, so IDs can't be probed) |
 | `GET /workouts/42`, `billing` service | 200 |
 | `GET /workouts/42`, `reporting` service | 403 (not in its grants) |
-| `GET /workouts/42`, `billing` with the wrong key, or an unknown service (including names like `constructor`) | 401 |
+| `GET /workouts/42`, `billing` with the wrong key, or an unknown service | 401 |
+| `GET /workouts/42`, `billing` with the wrong key plus a valid user token | 401 (`false` stops the chain) |
 | A handler with no `@AuthzScope()` | 500 (the handler never runs) |
 
-> **Keep the registry, the authenticators, the services that register
-> branches, and the interceptor provider at NestJS's default (singleton)
-> scope.** They plug themselves in from their constructors, and a
-> request-scoped provider is constructed on every request. So is anything that
-> injects one, because request scope propagates up the dependency chain. That
-> would re-register them on every call (an error with the registry above) and
-> rebuild the interceptor each time. Authenticators and rights functions are
-> passed the request data they need, so they don't need request-scoped
-> dependencies.
+### What `AuthxModule` checks at startup ###
+The app fails to start, with an error naming the problem, when:
+- an authenticator is request-scoped or transient, or depends on a
+  request-scoped provider (it would be rebuilt on every request);
+- two authenticators share an `order`, or one is listed in more than one
+  module's `providers`;
+- a name in `expectAuthenticators` isn't found, or no authenticators are found
+  at all.
+
+Add rights-tree branches from a provider's constructor or `onModuleInit`. Once
+the app has started, `addToRightsTree` throws: a branch added then is almost
+always coming from a request-scoped provider, which is constructed per request.
+
+### Without `AuthxModule` ###
+`HttpAuthxInterceptor` can also be installed directly, with your own
+`principalFn` and rights tree. `AuthxModule` is a wrapper around exactly this:
+
+```ts
+{
+  provide: APP_INTERCEPTOR,
+  useFactory: () =>
+    new HttpAuthxInterceptor<AppIdentity, AppIdentifiedBill>({
+      authn: { principalFn: (headers, cookies, request, context) => /* bill, null or false */, anonymousScopes: [] },
+      authz: { tree: { children: { /* branches */ } } },
+    }),
+}
+```
 
 ## Logging ##
 `HttpAuthxInterceptor` accepts an optional `logger` implementing `AuthxLogger`:
@@ -388,9 +371,10 @@ logged.
 ## Development ##
 - `pnpm test` builds and runs the tests against both builds on the NestJS
   version in `devDependencies`.
-- `pnpm test:matrix [nest10 nest11 nest12]` packs the library, installs the
-  tarball into each `test/matrix/nestNN` project and runs the same tests, plus a
-  type-check of typical app code, against that NestJS major.
+- `pnpm test:matrix [nest10.0.0 nest10 nest11 nest12]` packs the library,
+  installs the tarball into each `test/matrix` project and runs the same tests,
+  plus a type-check of typical app code. `nestNN` projects use the latest
+  release of that major; `nest10.0.0` pins the oldest supported release.
 - `pnpm check:exports` validates the `exports` map with
   [`@arethetypeswrong/cli`](https://github.com/arethetypeswrong/arethetypeswrong.github.io).
 - CI (`.github/workflows/ci.yml`) runs lint, tests, the exports check and the
@@ -410,9 +394,18 @@ Releases are published by GitHub Actions only, never from a local machine:
 
 ## Changelog ##
 #### 0.10.0 (first release of the fork) ####
-- **Requires NestJS 10 or newer.** CI-style matrix tests run against the latest
-  NestJS 10, 11 and 12 releases (`pnpm test:matrix`). The minor version tracks
-  the minimum NestJS major.
+- **Requires NestJS 10 or newer.** CI-style matrix tests run against NestJS
+  10.0.0 and the latest 10, 11 and 12 releases (`pnpm test:matrix`). The minor
+  version tracks the minimum NestJS major.
+- **New `AuthxModule`.** Installs the interceptor, discovers `@Authenticator()`
+  providers into an ordered chain, collects rights-tree branches through
+  `AuthxRegistry`, and rejects misconfigurations at startup. Using
+  `HttpAuthxInterceptor` directly still works. `@nestjs/core` is now a peer
+  dependency.
+- `principalFn` (and `@Authenticator().authenticate`) receives the
+  `ExecutionContext` as a fourth argument, so credential sources that work
+  from Nest's context can plug in. Existing three-argument functions are
+  unaffected.
 - **Ships both ESM and CommonJS builds** behind an `exports` map. Bills from
   either build are accepted by the interceptor from the other, so an app that
   ends up loading both still authenticates correctly.
