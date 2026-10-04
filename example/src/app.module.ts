@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthxModule, messageFirstLogger } from '@pvogel/nestjs-auth';
-import { HealthController } from './health/health.controller';
+import { HealthModule } from './health/health.module';
 import { InternalServicesModule } from './internal-services/internal-services.module';
 import { MeModule } from './me/me.module';
 import { NotesModule } from './notes/notes.module';
@@ -16,11 +16,11 @@ import { UsersModule } from './users/users.module';
       // set AUTHX_DEBUG=1 to see why requests are denied
       logger: process.env.AUTHX_DEBUG ? messageFirstLogger(console) : undefined,
     }),
+    HealthModule,
     InternalServicesModule,
     UsersModule,
     MeModule,
     NotesModule,
   ],
-  controllers: [HealthController],
 })
 export class AppModule {}

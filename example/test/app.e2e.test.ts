@@ -39,7 +39,10 @@ after(() => app.close());
 
 describe('anonymous callers', () => {
   test('can reach the health check, even with bad credentials', async () => {
-    assert.deepEqual(await call('GET', '/health', { authorization: 'Bearer nope' }), { status: 200, body: { ok: true } });
+    const { status, body } = await call('GET', '/health', { authorization: 'Bearer nope' });
+    assert.equal(status, 200);
+    assert.equal(body.status, 'ok');
+    assert.equal(body.details.memory_heap.status, 'up');
   });
   test('can log in, with the right password', async () => {
     assert.equal((await call('POST', '/login', {}, { username: 'alice', password: 'wrong' })).status, 401);

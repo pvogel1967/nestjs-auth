@@ -40,7 +40,7 @@
     "lint": "eslint .",
     "build": "rm -rf dist && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/write-dist-package-json.mjs",
     "watch": "tsc -p tsconfig.json --watch",
-    "test": "pnpm build && node --test \"test/*.test.{cjs,mjs}\"",
+    "test": "pnpm build && node scripts/check-readme-snippets.mjs && node --test \"test/*.test.{cjs,mjs}\"",
     "check:exports": "pnpm build && attw --pack .",
     "prepare": "pnpm lint && pnpm build",
     "test:matrix": "node scripts/test-matrix.mjs"

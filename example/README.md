@@ -1,7 +1,8 @@
 # `@pvogel/nestjs-auth` example #
 
-A small, runnable NestJS 11 app that uses `@pvogel/nestjs-auth` the way the
-[main README](../README.md#quick-start) describes. The earlier example for the
+A small, runnable NestJS 11 app that uses `@pvogel/nestjs-auth`. The
+[main README's quick start](../README.md#quick-start) walks through this app,
+quoting its files directly. The earlier example for the
 original library is Ed Ropple's
 [eropple/nestjs-auth-example](https://github.com/eropple/nestjs-auth-example).
 This one covers the same ground (logging in, a `/me` endpoint and per-record
@@ -19,7 +20,7 @@ pnpm install && pnpm build
 
 # then from example/
 pnpm install
-pnpm start   # http://localhost:3000; set PORT to change it
+pnpm start   # http://localhost:3000 (health check at /health); set PORT to change it
 pnpm test    # end-to-end tests against the running app
 ```
 
@@ -79,5 +80,6 @@ Alice's note, and the indexer reading Bob's private note.
 | A service owning a rights-tree branch as a private `#tree` | [`src/notes/notes.service.ts`](src/notes/notes.service.ts) |
 | `context` loading the resource into `req.locals` for the `right`s and the handler | [`src/notes/notes.service.ts`](src/notes/notes.service.ts), [`src/notes/notes.controller.ts`](src/notes/notes.controller.ts) |
 | Scopes built from route params | [`src/notes/notes.controller.ts`](src/notes/notes.controller.ts) |
-| `@AuthnDisallowed()` (login) and `@AuthnSkip()` (health) | [`src/users/login.controller.ts`](src/users/login.controller.ts), [`src/health/health.controller.ts`](src/health/health.controller.ts) |
+| `@AuthnDisallowed()` (login) | [`src/users/login.controller.ts`](src/users/login.controller.ts) |
+| `@AuthnSkip()` on a [Terminus](https://docs.nestjs.com/recipes/terminus) health check | [`src/health/health.controller.ts`](src/health/health.controller.ts) |
 | End-to-end tests of every rule above | [`test/app.e2e.test.ts`](test/app.e2e.test.ts) |

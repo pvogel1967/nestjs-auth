@@ -24,9 +24,9 @@ Beyond simply updating the original library to support modern node patterns and 
   shows up the first time the route is exercised instead of quietly allowing
   access.
 - **Beyond roles: attribute-based access control.** An identity's _grants_ say
-  what it may ask for, as OAuth-style scopes with globs (`workouts/**/*`). The
+  what it may ask for, as OAuth-style scopes with globs (`notes/**/*`). The
   _rights tree_ then decides each request from attributes of the caller and the
-  resource, such as whether the `workoutId` in the URL belongs to the caller.
+  resource, such as whether the note in the URL belongs to the caller.
   Checks are ordinary async TypeScript functions, so there's no policy language
   or external service to run.
 - **Pluggable.** Each kind of caller (users, internal services, partners) gets
@@ -63,27 +63,30 @@ yarn add @nestjs/common @nestjs/core reflect-metadata rxjs
 ```
 
 ## Quick start ##
-A complete, runnable NestJS 11 app using everything below, with end-to-end
-tests, lives in [`example/`](example/).
+This walks through the app in [`example/`](example/), a small NestJS 11 notes
+service that runs with no database. Every snippet is a file from it, verbatim
+(`pnpm test` fails if they drift apart), so you can read the README and the
+example as one app. See [example/README.md](example/README.md) to run it.
 
-The example below serves workouts to two kinds of caller: signed-in users, and
-internal services that hold their own least-privilege grants. `AuthxModule`
-installs the interceptor; each kind of caller gets an authenticator, and each
-feature service adds its own branch of the rights tree, all in their own
-modules.
+It serves two kinds of caller: people who log in for a session token, and an
+internal `search-indexer` service that authenticates with a shared secret and
+holds its own least-privilege grants. Each kind of caller gets an
+authenticator, and each feature adds its own branch of the rights tree, all in
+their own modules.
 
 **1. Define your identities.**
 
 ```ts
-// identity.ts
+// example/src/identity.ts
 import { AnonymousBill, IdentifiedBill, type RightsTree } from '@pvogel/nestjs-auth';
 
 export interface User {
   id: string;
+  name: string;
   admin: boolean;
 }
 
-/** A signed-in user: the principal, its credential, and its grants. */
+/** A signed-in user. The credential is their session token. */
 export class UserBill extends IdentifiedBill<User, string> {
   readonly kind = 'user';
 }
@@ -104,23 +107,30 @@ export type AppRightsTree = RightsTree<AppIdentity>;
 **2. Install `AuthxModule`.**
 
 ```ts
-// app.module.ts
+// example/src/app.module.ts
 import { Module } from '@nestjs/common';
-import { AuthxModule } from '@pvogel/nestjs-auth';
-import { InternalServicesModule } from './internal-services.module';
-import { UsersModule } from './users.module';
-import { WorkoutsModule } from './workouts.module';
+import { AuthxModule, messageFirstLogger } from '@pvogel/nestjs-auth';
+import { HealthModule } from './health/health.module';
+import { InternalServicesModule } from './internal-services/internal-services.module';
+import { MeModule } from './me/me.module';
+import { NotesModule } from './notes/notes.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
     AuthxModule.forRoot({
-      anonymousScopes: ['workouts/list'],
+      // what callers without credentials may ask for
+      anonymousScopes: ['login'],
       // fail at startup unless both are registered as providers somewhere in the app
       expectAuthenticators: ['internal-service', 'user'],
+      // set AUTHX_DEBUG=1 to see why requests are denied
+      logger: process.env.AUTHX_DEBUG ? messageFirstLogger(console) : undefined,
     }),
+    HealthModule,
     InternalServicesModule,
     UsersModule,
-    WorkoutsModule,
+    MeModule,
+    NotesModule,
   ],
 })
 export class AppModule {}
@@ -132,7 +142,7 @@ when the options come from configuration.
 Authenticators don't need to be imported into or exported to `AuthxModule`: it
 finds them wherever they're declared. Each one just has to be listed in the
 `providers` of exactly one module the app loads. That can be its feature module,
-as below, or a single app-level module (say, `AppAuthxModule`) that declares all
+as here, or a single app-level module (say, `AppAuthxModule`) that declares all
 of them, as long as that module can inject each authenticator's dependencies.
 
 **3. Add an authenticator for each kind of caller.** An authenticator returns
@@ -144,58 +154,68 @@ non-`null` answer wins, and `null` from all of them means an anonymous caller.
 `ExecutionContext`; use whichever you need.
 
 ```ts
-// user.authenticator.ts
+// example/src/users/user.authenticator.ts
 import { Injectable } from '@nestjs/common';
 import { Authenticator, type AuthxAuthenticator, type StringTo } from '@pvogel/nestjs-auth';
-import { type AppIdentifiedBill, UserBill } from './identity';
+import { type AppIdentifiedBill, UserBill } from '../identity';
 import { SessionService } from './session.service';
+
+const BEARER = /^Bearer (.+)$/i;
 
 @Injectable()
 @Authenticator({ name: 'user', order: 20 })
 export class UserAuthenticator implements AuthxAuthenticator<AppIdentifiedBill> {
   constructor(private readonly sessions: SessionService) {}
 
-  async authenticate(headers: StringTo<string | Array<string> | undefined>): Promise<UserBill | false | null> {
-    const token = headers.authorization;
-    if (typeof token !== 'string') {
-      return null;
+  authenticate(headers: StringTo<string | Array<string> | undefined>): UserBill | false | null {
+    const header = headers.authorization;
+    if (header === undefined) {
+      return null; // not a user request; maybe another authenticator's, maybe anonymous
     }
-    const user = await this.sessions.userForToken(token);
-    if (!user) {
-      return false;
+    const token = typeof header === 'string' ? BEARER.exec(header)?.[1] : undefined;
+    const user = token ? this.sessions.userForToken(token) : undefined;
+    if (!token || !user) {
+      return false; // a user credential, but not a valid one: 401
     }
-    return new UserBill(user, token, user.admin ? ['**/*'] : ['workouts/**/*']);
+    // Grants say what a session may ask for; the rights tree still decides each request.
+    return new UserBill(user, token, user.admin ? ['**/*'] : ['me/**/*', 'notes/**/*']);
   }
 }
 ```
 
 ```ts
-// users.module.ts
+// example/src/users/users.module.ts
 import { Module } from '@nestjs/common';
+import { LoginController } from './login.controller';
 import { SessionService } from './session.service';
 import { UserAuthenticator } from './user.authenticator';
+import { UsersService } from './users.service';
 
-// SessionService stays private to this module; AuthxModule doesn't need it exported.
-@Module({ providers: [SessionService, UserAuthenticator] })
+@Module({
+  controllers: [LoginController],
+  // Nothing is exported: AuthxModule discovers UserAuthenticator wherever it's declared.
+  providers: [UsersService, SessionService, UserAuthenticator],
+})
 export class UsersModule {}
 ```
 
 Internal services authenticate with a per-service shared secret, and their
-grants come from the database, so a service's access can be tightened without a
-deploy. `InternalServicesModule` lists this authenticator, `InternalServicesConfig`
-and `ServiceScopeRepository` in its `providers`, just like `UsersModule`.
+grants come from stored scopes (here [an in-memory stand-in for a table](example/src/internal-services/service-scope.repository.ts)),
+so a service's access can be tightened without a deploy.
+[`InternalServicesModule`](example/src/internal-services/internal-services.module.ts)
+declares this authenticator the same way `UsersModule` declares its own.
 
 ```ts
-// internal-service.authenticator.ts
+// example/src/internal-services/internal-service.authenticator.ts
 import { timingSafeEqual } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { Authenticator, type AuthxAuthenticator, type StringTo } from '@pvogel/nestjs-auth';
-import { type AppIdentifiedBill, InternalServiceBill } from './identity';
+import { type AppIdentifiedBill, InternalServiceBill } from '../identity';
 import { InternalServicesConfig } from './internal-services.config';
 import { ServiceScopeRepository } from './service-scope.repository';
 
-const SERVICE_NAME_HEADER = 'x-service-name';
-const SERVICE_KEY_HEADER = 'x-service-key';
+export const SERVICE_NAME_HEADER = 'x-service-name';
+export const SERVICE_KEY_HEADER = 'x-service-key';
 
 @Injectable()
 @Authenticator({ name: 'internal-service', order: 10 })
@@ -217,7 +237,6 @@ export class InternalServiceAuthenticator implements AuthxAuthenticator<AppIdent
     if (typeof serviceName !== 'string' || typeof key !== 'string' || !secret || !safeEqual(key, secret)) {
       return false;
     }
-    // e.g. SELECT scope FROM service_scopes WHERE service_name = $1
     return new InternalServiceBill(serviceName, null, await this.scopes.scopesFor(serviceName));
   }
 }
@@ -239,59 +258,90 @@ The service keeps its branch as a private field next to the code it protects,
 and registers it from its constructor.
 
 ```ts
-// workouts.service.ts
+// example/src/notes/notes.service.ts
 import { Injectable } from '@nestjs/common';
 import { AuthxRegistry } from '@pvogel/nestjs-auth';
-import type { AppIdentifiedBill, AppIdentity, AppRightsTree } from './identity';
-import { type Workout, WorkoutRepository } from './workout.repository';
+import type { AppIdentifiedBill, AppIdentity, AppRightsTree, User } from '../identity';
+import { type Note, NotesRepository } from './notes.repository';
 
 @Injectable()
-export class WorkoutsService {
+export class NotesService {
+  // The notes branch of the rights tree lives next to the code it protects.
   #tree: AppRightsTree = {
     children: {
-      // workouts/list
-      list: { right: () => true },
+      // notes/list and notes/create: people only.
+      list: { right: (_scopePart, req) => req.identity.isIdentified && req.identity.kind === 'user' },
+      create: { right: (_scopePart, req) => req.identity.isIdentified && req.identity.kind === 'user' },
     },
-    // workouts/<workoutId>/...
+    // notes/<noteId>/...
     wildcard: {
-      // `context` loads what the rights below need, and can deny early; only a `right` can allow.
-      context: async (workoutId, req) => {
-        const workout = await this.workouts.findById(workoutId);
-        if (!workout) {
+      // Load the note once for every right below (and for the handler). A note
+      // that doesn't exist is a 403, not a 404, so IDs can't be probed.
+      context: async (noteId, req) => {
+        const note = await this.notes.findById(noteId);
+        if (!note) {
           return false;
         }
-        req.locals.workout = workout;
+        req.locals.note = note;
         return true;
       },
       children: {
-        // workouts/<workoutId>/view
+        // notes/<noteId>/view: the owner, anyone it's shared with, admins, and
+        // services (which are limited by their grants).
         view: {
           right: (_scopePart, req) => {
             const identity = req.identity;
-            const workout: Workout = req.locals.workout;
+            const note: Note = req.locals.note;
             if (identity.isAnonymous) {
               return false;
             }
             if (identity.kind === 'service') {
-              return true; // services are limited by their grants alone
+              return true;
             }
-            return identity.principal.admin || workout.ownerId === identity.principal.id;
+            const user = identity.principal;
+            return user.admin || note.ownerId === user.id || note.sharedWith.includes(user.id);
+          },
+        },
+        // notes/<noteId>/edit: the owner and admins only.
+        edit: {
+          right: (_scopePart, req) => {
+            const identity = req.identity;
+            const note: Note = req.locals.note;
+            return identity.isIdentified && identity.kind === 'user' && (identity.principal.admin || note.ownerId === identity.principal.id);
           },
         },
       },
     },
   };
 
-  constructor(registry: AuthxRegistry<AppIdentity, AppIdentifiedBill>, private readonly workouts: WorkoutRepository) {
-    registry.addToRightsTree('workouts', this.#tree);
+  constructor(
+    registry: AuthxRegistry<AppIdentity, AppIdentifiedBill>,
+    private readonly notes: NotesRepository,
+  ) {
+    registry.addToRightsTree('notes', this.#tree);
+  }
+
+  listFor(user: User): Promise<Array<Note>> {
+    return this.notes.findVisibleTo(user.id);
+  }
+
+  create(owner: User, text: string, sharedWith: ReadonlyArray<string> = []): Promise<Note> {
+    return this.notes.save({ ownerId: owner.id, text, sharedWith });
+  }
+
+  update(note: Note, text: string): Promise<Note> {
+    return this.notes.save({ ...note, text });
   }
 }
 ```
 
 The tree's functions run per request, so they can use the service's injected
-dependencies through `this`. A `context` that returns `false` for a resource
-that doesn't exist gives a 403, not a 404, so callers can't probe for IDs they
-aren't allowed to see.
+dependencies through `this`. `context` loads the note once, for every `right`
+below it and for the handler. A note that doesn't exist gets a 403 rather than a
+404, so callers can't probe for IDs they aren't allowed to see. The example's
+[`UsersService`](example/src/users/users.service.ts) and
+[`MeService`](example/src/me/me.service.ts) own the `login` and `me` branches
+the same way.
 
 Write `AuthxRegistry<...>` in the constructor itself. A type alias for it
 compiles, but NestJS then sees the parameter's type as `Object` and can't inject
@@ -300,51 +350,74 @@ it; use `@Inject(AuthxRegistry)` if you want an alias.
 **5. Decorate the controller.**
 
 ```ts
-// workouts.controller.ts
-import { Controller, Get, Param } from '@nestjs/common';
-import { AuthnOptional, AuthnSkip, AuthzScope, Identity, type IdentifiedExpressRequest } from '@pvogel/nestjs-auth';
-import type { AppIdentifiedBill, AppIdentity } from './identity';
+// example/src/notes/notes.controller.ts
+import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
+import { AuthzScope, Identity, type IdentifiedExpressRequest } from '@pvogel/nestjs-auth';
+import type { AppIdentity, UserBill } from '../identity';
+import type { Note } from './notes.repository';
+import { NotesService } from './notes.service';
 
-@Controller('workouts')
-export class WorkoutsController {
+type AppRequest = IdentifiedExpressRequest<AppIdentity>;
+
+interface NoteBody {
+  text: string;
+  sharedWith?: ReadonlyArray<string>;
+}
+
+@Controller('notes')
+export class NotesController {
+  constructor(private readonly notes: NotesService) {}
+
   @Get()
-  @AuthnOptional() // anonymous callers get `anonymousScopes`
-  @AuthzScope('workouts/list')
-  list() {
-    return [];
+  @AuthzScope('notes/list')
+  list(@Identity() identity: UserBill) {
+    return this.notes.listFor(identity.principal);
   }
 
-  @Get('health')
-  @AuthnSkip() // no authentication or authorization at all
-  health() {
-    return { ok: true };
+  @Post()
+  @AuthzScope('notes/create')
+  create(@Identity() identity: UserBill, @Body() body: NoteBody) {
+    return this.notes.create(identity.principal, body.text, body.sharedWith);
   }
 
-  @Get(':workoutId')
-  @AuthzScope((req: IdentifiedExpressRequest<AppIdentity>) => `workouts/${req.params.workoutId}/view`)
-  get(@Param('workoutId') workoutId: string, @Identity() identity: AppIdentifiedBill) {
-    const viewer = identity.kind === 'user' ? identity.principal.id : `service:${identity.principal}`;
-    return { workoutId, viewer };
+  // The scope is built from the route param, so the rights tree checks this specific note.
+  @Get(':noteId')
+  @AuthzScope((req: AppRequest) => `notes/${req.params.noteId}/view`)
+  view(@Param('noteId') _noteId: string, @Req() req: AppRequest): Note {
+    return req.locals.note; // already loaded by the rights tree's `context`
+  }
+
+  @Patch(':noteId')
+  @AuthzScope((req: AppRequest) => `notes/${req.params.noteId}/edit`)
+  edit(@Param('noteId') _noteId: string, @Req() req: AppRequest, @Body() body: NoteBody) {
+    return this.notes.update(req.locals.note, body.text);
   }
 }
 ```
 
-The result, where the `billing` service's stored grants are `workouts/*/view`
-and the `reporting` service's are `workouts/list`:
+Logging in uses [`@AuthnDisallowed()`](example/src/users/login.controller.ts),
+so only anonymous callers can, and the
+[Terminus health check](example/src/health/health.controller.ts) uses
+`@AuthnSkip()`, so probes need no credentials.
+
+The result, where Alice owns note 1 and has shared it with Bob, note 2 is Bob's
+and private, and `root` is an admin. Every row is covered by the example's
+[end-to-end tests](example/test/app.e2e.test.ts).
 
 | Request | Response |
 |---|---|
-| `GET /workouts`, no credentials | 200 (anonymous scopes allow `workouts/list`) |
-| `GET /workouts/42`, no credentials | 401 (authentication required) |
-| `GET /workouts/42`, invalid user token | 401 |
-| `GET /workouts/42`, user who doesn't own workout 42 | 403 (rights tree denies) |
-| `GET /workouts/42`, owner or admin | 200 |
-| `GET /workouts/99` (no such workout), as an admin | 403 (`context` denies; no 404, so IDs can't be probed) |
-| `GET /workouts/42`, `billing` service | 200 |
-| `GET /workouts/42`, `reporting` service | 403 (not in its grants) |
-| `GET /workouts/42`, `billing` with the wrong key, or an unknown service | 401 |
-| `GET /workouts/42`, `billing` with the wrong key plus a valid user token | 401 (`false` stops the chain) |
-| A handler with no `@AuthzScope()` | 500 (the handler never runs) |
+| `GET /notes`, no credentials | 401 (authentication required) |
+| `GET /notes`, invalid bearer token | 401 |
+| `POST /login` while already signed in | 401 (`@AuthnDisallowed()`) |
+| `GET /notes/1` as Alice (owner) or Bob (shared with) | 200 |
+| `PATCH /notes/1` as Bob | 403 (sharing is read-only) |
+| `GET /notes/2` as Alice | 403 (Bob's private note) |
+| `GET /notes/2` or `PATCH /notes/2` as `root` | 200 (admin) |
+| `GET /notes/999` as `root` | 403 (`context` denies; no 404, so IDs can't be probed) |
+| `GET /notes/2` as `search-indexer` | 200 |
+| `GET /notes` or `PATCH /notes/2` as `search-indexer` | 403 (not in its grants) |
+| `search-indexer` with the wrong secret, even plus a valid user token | 401 (`false` stops the chain) |
+| `GET /health`, even with bad credentials | 200 (`@AuthnSkip()`) |
 
 ### What `AuthxModule` checks at startup ###
 The app fails to start, with an error naming the problem, when:
