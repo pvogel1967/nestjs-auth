@@ -2,10 +2,14 @@
 [![npm version](https://badge.fury.io/js/%40eropple%2Fnestjs-auth.svg)](https://badge.fury.io/js/%40eropple%2Fnestjs-auth)
 
 ## Current Status ##
-`0.5.x` is being used, in anger, on multiple production apps, at my current
+`0.6.x` is being used, in anger, on multiple production apps, at my current
 employer and by other NestJS users.
 
 ### Recent Changes ###
+#### 0.6.0 ####
+- **Now requires NestJS 7. Sorry about that. They broke compatibility.**
+- Fixed breaking changes going to NestJS 7. NestJS 6 should remain on `0.5.2`.
+
 #### 0.5.2 ####
 - Bug fix: not awaiting the `context` at the root of the authz tree. I will
   probably rethink the types expressing that API to make this easier to catch

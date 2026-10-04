@@ -10,6 +10,7 @@
     "sourceMap": true,
     "strict": true,
     "preserveWatchOutput": true,
+    "skipLibCheck": true,
     "outDir": "./dist",
     "baseUrl": "./"
   },
