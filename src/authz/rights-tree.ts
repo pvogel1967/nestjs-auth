@@ -1,11 +1,13 @@
-import { IdentifiedExpressRequest } from '../helper-types.js';
+import { IdentifiedExpressRequest, IdentityTag } from '../helper-types.js';
 import { IdentityBill } from '../types.js';
 
+/**
+ * `TRequest` is the request the tree's functions receive. It defaults to
+ * Express's; Fastify apps pass `IdentifiedRequest<TIdentity, FastifyRequest>`.
+ */
 export interface RightsTree<
   TIdentity extends IdentityBill = IdentityBill,
-  TRequest extends IdentifiedExpressRequest<
-    TIdentity
-  > = IdentifiedExpressRequest<TIdentity>
+  TRequest extends IdentityTag<TIdentity> = IdentifiedExpressRequest<TIdentity>
 > {
   readonly context?: (scopePart: string, req: TRequest) => any | Promise<any>;
   readonly right?: (

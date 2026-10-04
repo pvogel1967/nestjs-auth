@@ -2,7 +2,8 @@
 // (ESM or CJS) the caller passes in, then exercises authn/authz over HTTP.
 // NestJS itself is passed in too, so the version matrix can supply its own.
 // The app is wired either by hand (`wiring: 'interceptor'`) or through
-// AuthxModule (`wiring: 'module'`); both must behave identically.
+// AuthxModule (`wiring: 'module'`), on Express or Fastify (`platform`); every
+// combination must behave identically.
 require('reflect-metadata');
 const assert = require('node:assert/strict');
 
@@ -11,12 +12,11 @@ function decorate(target, name, decorators) {
   Object.defineProperty(target, name, Reflect.decorate(decorators, target, name, descriptor));
 }
 
-// `nest` is `{ common, core }`. `lib` provides the interceptor and decorators;
+// `nest` is `{ common, core, fastify }`. `lib` provides the interceptor and decorators;
 // `billLib` provides the bill classes the app's principalFn returns. Passing
 // the other build as `billLib` covers apps that end up with both builds loaded.
-async function startApp(nest, lib, { billLib = lib, logger, wiring = 'interceptor' } = {}) {
+async function startApp(nest, lib, { billLib = lib, logger, wiring = 'interceptor', platform = 'express' } = {}) {
   const { Controller, Get, Module, Param } = nest.common;
-  const { NestFactory } = nest.core;
   const { AuthnDisallowed, AuthnOptional, AuthnSkip, AuthzScope, HttpAuthxInterceptor, Identity } = lib;
 
   class TestController {
@@ -75,9 +75,10 @@ async function startApp(nest, lib, { billLib = lib, logger, wiring = 'intercepto
     }
   };
 
-  const app = wiring === 'module'
-    ? await NestFactory.create(moduleApp(nest, lib, { TestController, branches, principalFn, logger }), { logger: false })
-    : await NestFactory.create(classWith(Module({ controllers: [TestController] })), { logger: false });
+  const rootModule = wiring === 'module'
+    ? moduleApp(nest, lib, { TestController, branches, principalFn, logger })
+    : classWith(Module({ controllers: [TestController] }));
+  const app = await createNestApp(nest, rootModule, platform);
   if (wiring !== 'module') {
     app.useGlobalInterceptors(
       new HttpAuthxInterceptor({
@@ -97,6 +98,12 @@ async function startApp(nest, lib, { billLib = lib, logger, wiring = 'intercepto
 }
 
 const classWith = (...decorators) => Reflect.decorate(decorators, class {});
+
+function createNestApp(nest, rootModule, platform) {
+  return platform === 'fastify'
+    ? nest.core.NestFactory.create(rootModule, new nest.fastify.FastifyAdapter(), { logger: false })
+    : nest.core.NestFactory.create(rootModule, { logger: false });
+}
 
 function injectable(nest, cls, deps = [], options) {
   nest.common.Injectable(options)(cls);
@@ -186,4 +193,4 @@ async function runScenario(t, nest, lib, options) {
   });
 }
 
-module.exports = { classWith, injectable, runScenario, startApp };
+module.exports = { classWith, createNestApp, injectable, runScenario, startApp };

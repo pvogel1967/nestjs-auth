@@ -4,15 +4,15 @@ import type { Request as ExpressRequest } from 'express';
 
 import { PrincipalFnRet } from '../authn/options.js';
 import { RightsTree } from '../authz/rights-tree.js';
-import { IdentifiedExpressRequest, StringTo } from '../helper-types.js';
+import { IdentifiedRequest, StringTo } from '../helper-types.js';
 import { AUTHENTICATOR } from '../metadata-keys.js';
 import { IdentifiedBillBase, IdentityBill } from '../types.js';
 import { AuthenticatorOptions, AuthxAuthenticator } from './authenticator.js';
 import { AUTHX_MODULE_OPTIONS } from './authx.module-definition.js';
 import { AuthxModuleOptions } from './options.js';
 
-type DiscoveredAuthenticator<TIdentifiedBill extends IdentifiedBillBase> = Required<AuthenticatorOptions> & {
-  instance: AuthxAuthenticator<TIdentifiedBill>;
+type DiscoveredAuthenticator<TIdentifiedBill extends IdentifiedBillBase, TRequest> = Required<AuthenticatorOptions> & {
+  instance: AuthxAuthenticator<TIdentifiedBill, TRequest>;
 };
 
 /**
@@ -24,20 +24,21 @@ type DiscoveredAuthenticator<TIdentifiedBill extends IdentifiedBillBase> = Requi
 export class AuthxRegistry<
   TIdentity extends IdentityBill = IdentityBill,
   TIdentifiedBill extends IdentifiedBillBase = IdentifiedBillBase,
+  TRequest = ExpressRequest,
 > implements OnModuleInit, OnApplicationBootstrap {
-  private readonly roots: StringTo<RightsTree<TIdentity, IdentifiedExpressRequest<TIdentity>>> = {};
-  private authenticators: ReadonlyArray<DiscoveredAuthenticator<TIdentifiedBill>> = [];
+  private readonly roots: StringTo<RightsTree<TIdentity, IdentifiedRequest<TIdentity, TRequest>>> = {};
+  private authenticators: ReadonlyArray<DiscoveredAuthenticator<TIdentifiedBill, TRequest>> = [];
   private started = false;
 
   /** The live tree: branches added before startup completes are all visible to the interceptor. */
-  readonly tree: RightsTree<TIdentity, IdentifiedExpressRequest<TIdentity>> = { children: this.roots };
+  readonly tree: RightsTree<TIdentity, IdentifiedRequest<TIdentity, TRequest>> = { children: this.roots };
 
   constructor(
     private readonly discovery: DiscoveryService,
     @Inject(AUTHX_MODULE_OPTIONS) private readonly options: AuthxModuleOptions,
   ) {}
 
-  addToRightsTree(scopeRoot: string, branch: RightsTree<TIdentity, IdentifiedExpressRequest<TIdentity>>) {
+  addToRightsTree(scopeRoot: string, branch: RightsTree<TIdentity, IdentifiedRequest<TIdentity, TRequest>>) {
     if (this.started) {
       throw new Error(
         `Rights tree branch '${scopeRoot}' was added after application startup. Add branches from a ` +
@@ -59,7 +60,7 @@ export class AuthxRegistry<
   async authenticate(
     headers: StringTo<string | Array<string> | undefined>,
     cookies: StringTo<string>,
-    request: ExpressRequest,
+    request: TRequest,
     context: ExecutionContext,
   ): Promise<PrincipalFnRet<TIdentifiedBill>> {
     for (const { instance } of this.authenticators) {
@@ -85,7 +86,7 @@ export class AuthxRegistry<
               'or transient, or depends on a request-scoped provider.',
           );
         }
-        const instance = wrapper.instance as AuthxAuthenticator<TIdentifiedBill> | undefined;
+        const instance = wrapper.instance as AuthxAuthenticator<TIdentifiedBill, TRequest> | undefined;
         if (typeof instance?.authenticate !== 'function') {
           throw new Error(`Authenticator '${name}' has no authenticate() method.`);
         }

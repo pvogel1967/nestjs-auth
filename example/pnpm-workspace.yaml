@@ -1,0 +1,4 @@
+# Its own workspace root, so `file:..` installs a copy of the library whose
+# NestJS peers resolve to this app's NestJS 11, not the library's dev copy.
+allowBuilds:
+  '@nestjs/core': false

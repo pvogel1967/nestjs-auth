@@ -3,6 +3,7 @@
 import 'reflect-metadata';
 import { Controller, Get, Injectable, Module, Param, type INestApplication } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
+import type { FastifyRequest } from 'fastify';
 import {
   AnonymousBill,
   Authenticator,
@@ -17,6 +18,7 @@ import {
   messageFirstLogger,
   objectFirstLogger,
   type IdentifiedExpressRequest,
+  type IdentifiedRequest,
   type RightsTree,
   type StringTo,
 } from '@pvogel/nestjs-auth';
@@ -103,3 +105,53 @@ export class WorkoutRights {
   providers: [UserAuthenticator, WorkoutRights],
 })
 export class ModuleWiredAppModule {}
+
+// Fastify: the same API, typed with FastifyRequest through the TRequest parameter.
+type FastifyAppRequest = IdentifiedRequest<AppIdentity, FastifyRequest>;
+
+const fastifyTree: RightsTree<AppIdentity, FastifyAppRequest> = {
+  children: {
+    reports: {
+      wildcard: {
+        context: (_reportId, req) => req.identity.isIdentified && req.hostname.length > 0,
+        children: { view: { right: (_part, req) => req.locals.allowed !== false } },
+      },
+    },
+  },
+};
+
+@Controller('reports')
+export class FastifyReportController {
+  @Get(':id')
+  @AuthzScope<AppIdentity, FastifyRequest>((req: FastifyAppRequest) => `reports/${(req.params as { id: string }).id}/view`)
+  get(@Identity() identity: AppBill) {
+    return identity.principal;
+  }
+}
+
+@Injectable()
+@Authenticator({ name: 'fastify-user', order: 30 })
+export class FastifyUserAuthenticator implements AuthxAuthenticator<AppBill, FastifyRequest> {
+  authenticate(headers: StringTo<string | Array<string> | undefined>, _cookies: StringTo<string>, request: FastifyRequest) {
+    return typeof headers.authorization === 'string' && request.ip ? new UserBill({ id: 2 }, headers.authorization, ['reports/**/*']) : null;
+  }
+}
+
+@Injectable()
+export class FastifyReportRights {
+  constructor(registry: AuthxRegistry<AppIdentity, AppBill, FastifyRequest>) {
+    registry.addToRightsTree('reports', fastifyTree.children!.reports);
+  }
+}
+
+export function createFastifyInterceptor() {
+  return new HttpAuthxInterceptor<AppIdentity, AppBill, FastifyRequest>({
+    authn: {
+      principalFn: (headers, _cookies, request) =>
+        typeof headers.authorization === 'string' ? new UserBill({ id: 3 }, request.hostname, ['**/*']) : null,
+      anonymousScopes: [],
+    },
+    authz: { tree: fastifyTree },
+    forbiddenResponse: (request, _reply, scopes) => ({ path: request.url, scopes }),
+  });
+}

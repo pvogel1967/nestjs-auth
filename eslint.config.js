@@ -3,7 +3,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/', '.matrix/', 'test/matrix/*/.pnp.*', 'test/matrix/*/.yarn/'] },
+  { ignores: ['dist/', 'example/dist/', '.matrix/', 'test/matrix/*/.pnp.*', 'test/matrix/*/.yarn/'] },
   js.configs.recommended,
   {
     files: ['src/**/*.ts'],

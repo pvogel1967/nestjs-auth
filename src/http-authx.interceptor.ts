@@ -1,9 +1,11 @@
 import {
   CallHandler,
   ExecutionContext,
+  HttpException,
+  HttpStatus,
   NestInterceptor,
 } from '@nestjs/common';
-import type { ServerResponse } from 'node:http';
+import type { IncomingHttpHeaders } from 'node:http';
 import { Observable } from 'rxjs';
 import { parse as cookieParse } from 'cookie';
 import type { Request as ExpressRequest } from 'express';
@@ -15,10 +17,9 @@ import {
   IdentifiedBillBase,
   AnyCtor,
 } from './types.js';
-import { StringTo, IdentifiedExpressRequest } from './helper-types.js';
+import { StringTo, IdentifiedRequest } from './helper-types.js';
 import { AuthnStatus } from './authn/authn-status.enum.js';
 import { AUTHN_STATUS, AUTHZ_SCOPES } from './metadata-keys.js';
-import { observableResponse } from './util.js';
 import { HttpAuthnOptions, PrincipalFnRet } from './authn/options.js';
 import { HttpAuthzOptions } from './authz/options.js';
 import { RightsTree } from './authz/rights-tree.js';
@@ -26,9 +27,14 @@ import { AuthzScopeArg, AuthzScopeArgFn } from './authz/decorators.js';
 import { getAllPropertyMetadata } from './metadata.js';
 import { AuthxLogger, noopLogger } from './logger.js';
 
+/**
+ * `TRequest` is the platform's request: Express's `Request` by default, or
+ * `FastifyRequest` for apps on `@nestjs/platform-fastify`.
+ */
 export interface HttpAuthxOptions<
   TIdentity extends IdentityBill,
-  TIdentifiedBill extends IdentifiedBillBase
+  TIdentifiedBill extends IdentifiedBillBase,
+  TRequest = ExpressRequest,
   > {
   /**
    * An optional logger that will provide detailed introspection into the
@@ -41,31 +47,29 @@ export interface HttpAuthxOptions<
   /**
    * Authentication-specific settings.
    */
-  authn: HttpAuthnOptions<TIdentifiedBill>;
+  authn: HttpAuthnOptions<TIdentifiedBill, TRequest>;
   /**
    * Authorization-specific settings.
    */
-  authz: HttpAuthzOptions<TIdentity>;
+  authz: HttpAuthzOptions<TIdentity, TRequest>;
 
   /**
-   * Creator for the response body provided when a 403 Forbidden is being sent.
-   * Useful for integrating with something like `@eropple/nestjs-openapi3` in
-   * order to send back typed errors.
+   * Creates the body of a 403 Forbidden, to send typed errors. `response` is
+   * the platform's response object (Express `Response` or `FastifyReply`).
    */
   forbiddenResponse?: (
-    request: ExpressRequest,
-    response: ServerResponse,
+    request: TRequest,
+    response: any,
     scopes: ReadonlyArray<string>,
   ) => StringTo<any>;
 
   /**
-   * Creator for the response body provided when a 401 Unauthorized is being
-   * sent. Useful for integrating with something like `@eropple/nestjs-openapi3`
-   * in order to send back typed errors.
+   * Creates the body of a 401 Unauthorized, to send typed errors. `response`
+   * is the platform's response object (Express `Response` or `FastifyReply`).
    */
   unauthorizedResponse?: (
-    request: ExpressRequest,
-    response: ServerResponse,
+    request: TRequest,
+    response: any,
   ) => StringTo<any>;
 }
 
@@ -93,38 +97,40 @@ export interface HttpAuthxOptions<
  */
 export class HttpAuthxInterceptor<
   TIdentityBill extends IdentityBill,
-  TIdentifiedBill extends IdentifiedBillBase
+  TIdentifiedBill extends IdentifiedBillBase,
+  TRequest = ExpressRequest,
   > implements NestInterceptor {
   private readonly logger: AuthxLogger;
   private readonly tree: RightsTree<
     TIdentityBill,
-    IdentifiedExpressRequest<TIdentityBill>
+    IdentifiedRequest<TIdentityBill, TRequest>
   >;
 
   constructor(
-    private readonly options: HttpAuthxOptions<TIdentityBill, TIdentifiedBill>,
+    private readonly options: HttpAuthxOptions<TIdentityBill, TIdentifiedBill, TRequest>,
   ) {
     this.logger = this.options.logger ?? noopLogger;
     this.tree = this.options.authz.tree;
   }
 
   //#region authn
-  private _unauthorized(
-    request: ExpressRequest,
-    response: ServerResponse,
-  ): Observable<any> {
+  // Rejections are thrown rather than written to the response, so NestJS
+  // renders them through whichever platform adapter is in use (Express or
+  // Fastify), and exception filters and outer interceptors see them.
+  private _unauthorized(request: TRequest, response: unknown): never {
     const body =
       this.options.unauthorizedResponse
         ? this.options.unauthorizedResponse(request, response)
         : { error: 'Unauthorized.' };
-    return observableResponse(response, body, 401);
+    throw new HttpException(body, HttpStatus.UNAUTHORIZED);
   }
 
   private async _doAuthn(
-    request: ExpressRequest,
+    request: TRequest,
     context: ExecutionContext,
   ): Promise<PrincipalFnRet<TIdentifiedBill>> {
-    const headers = request.headers;
+    // Express and Fastify requests both expose Node's parsed headers.
+    const headers = (request as { headers: IncomingHttpHeaders }).headers;
     // cookie@1 types values as possibly undefined, but parse() only returns keys it found.
     const cookies = cookieParse(headers.cookie || '') as StringTo<string>;
 
@@ -162,37 +168,33 @@ export class HttpAuthxInterceptor<
   //#endregion authn
 
   //#region authz
-  private _forbidden(
-    request: ExpressRequest,
-    response: ServerResponse,
-    scopes: ReadonlyArray<string>,
-  ): Observable<any> {
+  private _forbidden(request: TRequest, response: unknown, scopes: ReadonlyArray<string>): never {
     const body =
       this.options.forbiddenResponse
         ? this.options.forbiddenResponse(request, response, scopes)
         : { error: 'Forbidden.' };
-    return observableResponse(response, body, 403);
+    throw new HttpException(body, HttpStatus.FORBIDDEN);
   }
 
   private _getScopes(
-    request: IdentifiedExpressRequest<TIdentityBill>,
+    request: IdentifiedRequest<TIdentityBill, TRequest>,
     controller: AnyCtor<any>,
     // we get this from NestJS/rxjs
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     handler: Function,
   ): ReadonlyArray<string> {
     const metadata = getAllPropertyMetadata(controller.prototype, handler.name);
-    const scopesArgs: Array<AuthzScopeArg> | undefined = metadata[AUTHZ_SCOPES];
+    const scopesArgs: Array<AuthzScopeArg<TIdentityBill, TRequest>> | undefined = metadata[AUTHZ_SCOPES];
 
     if (!scopesArgs) {
       throw new Error(
-        `Handler for request '${request.url}' does not have @AuthzScope().`,
+        `Handler ${controller.name}.${handler.name} does not have @AuthzScope().`,
       );
     }
 
     // AppendArrayMetadata already flattened the decorator args, so one level is all that's left.
     const scopes = scopesArgs.flatMap(scopesArg =>
-      typeof scopesArg === 'function' ? (scopesArg as AuthzScopeArgFn)(request) : scopesArg,
+      typeof scopesArg === 'function' ? (scopesArg as AuthzScopeArgFn<TIdentityBill, TRequest>)(request) : scopesArg,
     );
 
     return [...new Set(scopes)];
@@ -207,14 +209,14 @@ export class HttpAuthxInterceptor<
   }
 
   private async _validateScopeAgainstRights(
-    request: IdentifiedExpressRequest<TIdentityBill>,
+    request: IdentifiedRequest<TIdentityBill, TRequest>,
     scope: string,
   ): Promise<boolean> {
     const scopeParts = scope.split('/');
     const nodeName = '[ROOT]';
     let node: RightsTree<
       TIdentityBill,
-      IdentifiedExpressRequest<TIdentityBill>
+      IdentifiedRequest<TIdentityBill, TRequest>
     > = this.tree;
     request.locals = request.locals || {};
 
@@ -226,7 +228,7 @@ export class HttpAuthxInterceptor<
     for (const scopePart of scopeParts) {
       this.logger.debug(`Testing node '${scopePart}'.`);
       let nextNode:
-        | RightsTree<TIdentityBill, IdentifiedExpressRequest<TIdentityBill>>
+        | RightsTree<TIdentityBill, IdentifiedRequest<TIdentityBill, TRequest>>
         | undefined;
 
       if (node.children) {
@@ -262,7 +264,7 @@ export class HttpAuthxInterceptor<
   }
 
   private async _validateScopesAgainstRights(
-    request: IdentifiedExpressRequest<TIdentityBill>,
+    request: IdentifiedRequest<TIdentityBill, TRequest>,
     scopes: ReadonlyArray<string>,
   ): Promise<boolean> {
     const rets = await Promise.all(
@@ -277,10 +279,8 @@ export class HttpAuthxInterceptor<
     context: ExecutionContext,
     next: CallHandler,
   ): Promise<Observable<any>> {
-    const request: IdentifiedExpressRequest<
-      TIdentityBill
-    > = context.switchToHttp().getRequest();
-    const response: ServerResponse = context.switchToHttp().getResponse();
+    const request = context.switchToHttp().getRequest<IdentifiedRequest<TIdentityBill, TRequest>>();
+    const response: unknown = context.switchToHttp().getResponse();
     const controller = context.getClass();
     const handler = context.getHandler();
     const status: AuthnStatus =

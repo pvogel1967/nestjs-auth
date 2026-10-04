@@ -25,13 +25,19 @@ function packageJsonOf(require, name) {
   return join(current, 'package.json');
 }
 
-const nest = { common: projectRequire('@nestjs/common'), core: projectRequire('@nestjs/core') };
+const nest = {
+  common: projectRequire('@nestjs/common'),
+  core: projectRequire('@nestjs/core'),
+  fastify: projectRequire('@nestjs/platform-fastify'),
+  rxjs: projectRequire('rxjs'),
+};
 const libPackageJson = projectRequire.resolve('@pvogel/nestjs-auth/package.json');
 const cjs = projectRequire('@pvogel/nestjs-auth');
 const esm = await import(
   pathToFileURL(join(dirname(libPackageJson), readJson(libPackageJson).exports['.'].import.default)).href
 );
 const { runModuleTests } = createRequire(import.meta.url)('../module.cjs');
+const { runRejectionTests } = createRequire(import.meta.url)('../rejections.cjs');
 const { runScenario } = createRequire(import.meta.url)('../scenario.cjs');
 
 test(`library resolves the project's NestJS ${expectedMajor}`, () => {
@@ -53,3 +59,9 @@ test(`CommonJS build through AuthxModule on NestJS ${expectedMajor}`, t => runSc
 test(`ESM build through AuthxModule on NestJS ${expectedMajor}`, t => runScenario(t, nest, esm, { wiring: 'module' }));
 test(`AuthxModule checks on NestJS ${expectedMajor} (CommonJS)`, t => runModuleTests(t, nest, cjs));
 test(`AuthxModule checks on NestJS ${expectedMajor} (ESM)`, t => runModuleTests(t, nest, esm));
+test(`CommonJS build on Fastify, NestJS ${expectedMajor}`, t => runScenario(t, nest, cjs, { platform: 'fastify' }));
+test(`ESM build on Fastify, NestJS ${expectedMajor}`, t => runScenario(t, nest, esm, { platform: 'fastify' }));
+test(`ESM build through AuthxModule on Fastify, NestJS ${expectedMajor}`, t =>
+  runScenario(t, nest, esm, { wiring: 'module', platform: 'fastify' }));
+test(`rejections on Express, NestJS ${expectedMajor}`, t => runRejectionTests(t, nest, esm, 'express'));
+test(`rejections on Fastify, NestJS ${expectedMajor}`, t => runRejectionTests(t, nest, esm, 'fastify'));

@@ -1,20 +1,23 @@
+import type { Request as ExpressRequest } from 'express';
+
 import { AUTHZ_SCOPES } from '../metadata-keys.js';
-import { IdentifiedExpressRequest } from '../helper-types.js';
+import { IdentifiedRequest } from '../helper-types.js';
 import { IdentityBill, AnyCtor } from '../types.js';
 import { AppendArrayMetadata, getAllPropertyMetadata } from '../metadata.js';
 
-export type AuthzScopeArgFn<TIdentity extends IdentityBill = IdentityBill> = (
-  req: IdentifiedExpressRequest<TIdentity>,
+export type AuthzScopeArgFn<TIdentity extends IdentityBill = IdentityBill, TRequest = ExpressRequest> = (
+  req: IdentifiedRequest<TIdentity, TRequest>,
 ) => Array<string> | string;
-export type AuthzScopeArg<TIdentity extends IdentityBill = IdentityBill> =
-  | AuthzScopeArgFn<TIdentity>
+export type AuthzScopeArg<TIdentity extends IdentityBill = IdentityBill, TRequest = ExpressRequest> =
+  | AuthzScopeArgFn<TIdentity, TRequest>
   | string;
 
 /**
  * Defines a scope (think OAuth2 scope) that `HttpAuthzInterceptor` will
  * check against. If the scope depends on something in the request, such as
- * a URL parameter, you can pass a function that takes the `http` module's
- * `IncomingMessage` and returns either a scope or a list of scopes.
+ * a URL parameter, you can pass a function that takes the request (Express's
+ * by default, or pass `TRequest` for Fastify) and returns either a scope or a
+ * list of scopes.
  *
  * If you return a list of scopes, they are _all required_ in order to allow
  * the requestor to access the resource. `@pvogel/nestjs-auth` does not and
@@ -22,8 +25,8 @@ export type AuthzScopeArg<TIdentity extends IdentityBill = IdentityBill> =
  *
  * @param scope a scope, a list of scopes, or a function to return the same
  */
-export function AuthzScope<TIdentity extends IdentityBill = IdentityBill>(
-  scope: AuthzScopeArg<TIdentity> | Array<AuthzScopeArg<TIdentity>>,
+export function AuthzScope<TIdentity extends IdentityBill = IdentityBill, TRequest = ExpressRequest>(
+  scope: AuthzScopeArg<TIdentity, TRequest> | Array<AuthzScopeArg<TIdentity, TRequest>>,
 ) {
   return AppendArrayMetadata(AUTHZ_SCOPES, scope);
 }

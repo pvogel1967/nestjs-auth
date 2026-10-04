@@ -1,4 +1,5 @@
 import { SetMetadata } from '@nestjs/common';
+import type { Request as ExpressRequest } from 'express';
 
 import { PrincipalFn } from '../authn/options.js';
 import { AUTHENTICATOR } from '../metadata-keys.js';
@@ -19,8 +20,11 @@ export interface AuthenticatorOptions {
  * `null` when the request isn't its kind of caller, `false` when it is but the
  * credentials are invalid (a 401), or a bill.
  */
-export interface AuthxAuthenticator<TIdentifiedBill extends IdentifiedBillBase = IdentifiedBillBase> {
-  authenticate: PrincipalFn<TIdentifiedBill>;
+export interface AuthxAuthenticator<
+  TIdentifiedBill extends IdentifiedBillBase = IdentifiedBillBase,
+  TRequest = ExpressRequest,
+> {
+  authenticate: PrincipalFn<TIdentifiedBill, TRequest>;
 }
 
 /**
