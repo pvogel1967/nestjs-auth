@@ -620,6 +620,10 @@ Releases are published by GitHub Actions only, never from a local machine:
    publishing (OIDC); no npm token is stored.
 
 ## Changelog ##
+#### 0.10.1 ####
+- No library changes. The first release published by GitHub Actions through
+  npm trusted publishing, with a provenance attestation.
+
 #### 0.10.0 (first release of the fork) ####
 - **Requires NestJS 10 or newer.** CI-style matrix tests run against NestJS
   10.0.0 and the latest 10, 11 and 12 releases (`pnpm test:matrix`). The minor

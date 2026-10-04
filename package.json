@@ -1,6 +1,6 @@
 {
   "name": "@pvogel/nestjs-auth",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Maintained fork of @eropple/nestjs-auth: authentication and rights-tree authorization for NestJS 10+.",
   "author": "Peter Vogel",
   "contributors": [
