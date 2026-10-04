@@ -1,5 +1,5 @@
-import { IdentifiedExpressRequest } from '../helper-types';
-import { IdentityBill } from '../types';
+import { IdentifiedExpressRequest } from '../helper-types.js';
+import { IdentityBill } from '../types.js';
 
 export interface RightsTree<
   TIdentity extends IdentityBill = IdentityBill,

@@ -1,37 +1,30 @@
-import * as Bunyan from 'bunyan';
-import bunyanBlackHole from 'bunyan-blackhole';
-import * as _ from 'lodash';
 import {
   CallHandler,
   ExecutionContext,
   NestInterceptor,
-  Type,
 } from '@nestjs/common';
-import { ServerResponse } from 'http';
+import type { ServerResponse } from 'node:http';
 import { Observable } from 'rxjs';
 import { parse as cookieParse } from 'cookie';
-import { Request as ExpressRequest } from 'express';
+import type { Request as ExpressRequest } from 'express';
+import nanomatch from 'nanomatch';
 
 import {
-  IdentifiedBill,
   IdentityBill,
   AnonymousBill,
   IdentifiedBillBase,
   AnyCtor,
-} from './types';
-import { StringTo, IdentifiedExpressRequest } from './helper-types';
-import { AuthnStatus } from './authn/authn-status.enum';
-import { AUTHN_STATUS, AUTHZ_SCOPES } from './metadata-keys';
-import { observableResponse } from './util';
-import { HttpAuthnOptions, PrincipalFnRet } from './authn/options';
-import { HttpAuthzOptions } from './authz/options';
-import { RightsTree } from './authz/rights-tree';
-import { AuthzScopeArg, AuthzScopeArgFn } from './authz/decorators';
-import { getAllPropertyMetadata } from './metadata';
-
-// TODO: create a types library for nanomatch
-// tslint:disable-next-line: no-var-requires
-const nanomatch = require('nanomatch');
+} from './types.js';
+import { StringTo, IdentifiedExpressRequest } from './helper-types.js';
+import { AuthnStatus } from './authn/authn-status.enum.js';
+import { AUTHN_STATUS, AUTHZ_SCOPES } from './metadata-keys.js';
+import { observableResponse } from './util.js';
+import { HttpAuthnOptions, PrincipalFnRet } from './authn/options.js';
+import { HttpAuthzOptions } from './authz/options.js';
+import { RightsTree } from './authz/rights-tree.js';
+import { AuthzScopeArg, AuthzScopeArgFn } from './authz/decorators.js';
+import { getAllPropertyMetadata } from './metadata.js';
+import { AuthxLogger, noopLogger } from './logger.js';
 
 export interface HttpAuthxOptions<
   TIdentity extends IdentityBill,
@@ -39,9 +32,11 @@ export interface HttpAuthxOptions<
   > {
   /**
    * An optional logger that will provide detailed introspection into the
-   * behavior of the interceptor.
+   * behavior of the interceptor. Wrap pino/bunyan with `objectFirstLogger()`
+   * and winston/`console` with `messageFirstLogger()`, or implement
+   * `AuthxLogger` directly.
    */
-  logger?: Bunyan;
+  logger?: AuthxLogger;
 
   /**
    * Authentication-specific settings.
@@ -75,7 +70,7 @@ export interface HttpAuthxOptions<
 }
 
 /**
- * The combined authentication layer of `@eropple/nestjs-auth`.
+ * The combined authentication layer of `@pvogel/nestjs-auth`.
  *
  * For authentication (formerly `HttpAuthnInterceptor`), this takes a
  * user-defined function (see `HttpAuthnOptions`) and determines from it the
@@ -100,7 +95,7 @@ export class HttpAuthxInterceptor<
   TIdentityBill extends IdentityBill,
   TIdentifiedBill extends IdentifiedBillBase
   > implements NestInterceptor {
-  private readonly logger: Bunyan;
+  private readonly logger: AuthxLogger;
   private readonly tree: RightsTree<
     TIdentityBill,
     IdentifiedExpressRequest<TIdentityBill>
@@ -109,8 +104,7 @@ export class HttpAuthxInterceptor<
   constructor(
     private readonly options: HttpAuthxOptions<TIdentityBill, TIdentifiedBill>,
   ) {
-    this.logger =
-      this.options.logger || bunyanBlackHole('HttpAuthxInterceptor');
+    this.logger = this.options.logger ?? noopLogger;
     this.tree = this.options.authz.tree;
   }
 
@@ -122,7 +116,7 @@ export class HttpAuthxInterceptor<
     const body =
       this.options.unauthorizedResponse
         ? this.options.unauthorizedResponse(request, response)
-        : { error: 'Forbidden.' };
+        : { error: 'Unauthorized.' };
     return observableResponse(response, body, 401);
   }
 
@@ -130,19 +124,19 @@ export class HttpAuthxInterceptor<
     request: ExpressRequest,
   ): Promise<PrincipalFnRet<TIdentifiedBill>> {
     const headers = request.headers;
-    const cookies = cookieParse(headers.cookie || '');
+    // cookie@1 types values as possibly undefined, but parse() only returns keys it found.
+    const cookies = cookieParse(headers.cookie || '') as StringTo<string>;
 
     return this.options.authn.principalFn(headers, cookies, request);
   }
 
-  private _buildIdentity(authn: PrincipalFnRet<TIdentifiedBill>) {
-    if (authn instanceof IdentifiedBill) {
-      // anonymous; create an anonymous identity bill
-      return authn as TIdentifiedBill;
-    } else {
-      // identified; we already _have_ an identity bill returned to us
-      return new AnonymousBill(this.options.authn.anonymousScopes);
+  private _buildIdentity(authn: TIdentifiedBill | null) {
+    // Checked structurally, not with `instanceof`: when the ESM and CJS builds
+    // are both loaded, the app's bills may come from the other build's classes.
+    if (authn?.isIdentified === true) {
+      return authn;
     }
+    return new AnonymousBill(this.options.authn.anonymousScopes);
   }
 
   private _shortCircuitBadAuth(
@@ -183,7 +177,7 @@ export class HttpAuthxInterceptor<
     request: IdentifiedExpressRequest<TIdentityBill>,
     controller: AnyCtor<any>,
     // we get this from NestJS/rxjs
-    // tslint:disable-next-line: ban-types
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     handler: Function,
   ): ReadonlyArray<string> {
     const metadata = getAllPropertyMetadata(controller.prototype, handler.name);
@@ -195,15 +189,12 @@ export class HttpAuthxInterceptor<
       );
     }
 
-    const scopes: Array<string> = _.flattenDeep(scopesArgs.map(scopesArg => {
-      if (typeof scopesArg !== 'function') {
-        return scopesArg;
-      } else {
-        return (scopesArg as AuthzScopeArgFn)(request);
-      }
-    }));
+    // AppendArrayMetadata already flattened the decorator args, so one level is all that's left.
+    const scopes = scopesArgs.flatMap(scopesArg =>
+      typeof scopesArg === 'function' ? (scopesArg as AuthzScopeArgFn)(request) : scopesArg,
+    );
 
-    return _.uniq(scopes);
+    return [...new Set(scopes)];
   }
 
   private _validateScopesAgainstGrants(
@@ -326,7 +317,7 @@ export class HttpAuthxInterceptor<
       grants,
     );
     if (!scopesAgainstGrants) {
-      this.logger.debug({ scopes, grants }, 'Request failed to validate scopes against grants.');
+      this.logger.debug('Request failed to validate scopes against grants.', { scopes, grants });
       return this._forbidden(request, response, scopes);
     }
 
@@ -335,7 +326,7 @@ export class HttpAuthxInterceptor<
       scopes,
     );
     if (!scopesAgainstRights) {
-      this.logger.debug({ scopes, grants }, 'Request failed to validate scopes against rights.');
+      this.logger.debug('Request failed to validate scopes against rights.', { scopes, grants });
       return this._forbidden(request, response, scopes);
     }
 

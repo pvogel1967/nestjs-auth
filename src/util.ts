@@ -1,7 +1,7 @@
-import { ServerResponse } from 'http';
-import { Observable } from 'rxjs';
+import type { ServerResponse } from 'node:http';
+import { NEVER, Observable } from 'rxjs';
 
-import { StringTo } from './helper-types';
+import { StringTo } from './helper-types.js';
 
 export function observableResponse(
   response: ServerResponse,
@@ -14,5 +14,5 @@ export function observableResponse(
   response.write(JSON.stringify(msg));
   response.end();
 
-  return Observable.create();
+  return NEVER;
 }

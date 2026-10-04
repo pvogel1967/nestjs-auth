@@ -1,8 +1,7 @@
-import * as Bunyan from 'bunyan';
-import { Request as ExpressRequest } from 'express';
+import type { Request as ExpressRequest } from 'express';
 
-import { IdentifiedBillBase } from '../types';
-import { StringTo } from '../helper-types';
+import { IdentifiedBillBase } from '../types.js';
+import { StringTo } from '../helper-types.js';
 
 export type PrincipalFnRet<TIdentifiedBill extends IdentifiedBillBase> =
   | TIdentifiedBill
@@ -42,10 +41,4 @@ export interface HttpAuthnOptions<TIdentifiedBill extends IdentifiedBillBase> {
    * The set of scopes to grant to an anonymous identity.
    */
   anonymousScopes: ReadonlyArray<string>;
-
-  /**
-   * An optional logger that will provide detailed introspection into the
-   * behavior of the interceptor.
-   */
-  logger?: Bunyan;
 }
