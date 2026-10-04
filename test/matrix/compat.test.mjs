@@ -63,5 +63,7 @@ test(`CommonJS build on Fastify, NestJS ${expectedMajor}`, t => runScenario(t, n
 test(`ESM build on Fastify, NestJS ${expectedMajor}`, t => runScenario(t, nest, esm, { platform: 'fastify' }));
 test(`ESM build through AuthxModule on Fastify, NestJS ${expectedMajor}`, t =>
   runScenario(t, nest, esm, { wiring: 'module', platform: 'fastify' }));
-test(`rejections on Express, NestJS ${expectedMajor}`, t => runRejectionTests(t, nest, esm, 'express'));
-test(`rejections on Fastify, NestJS ${expectedMajor}`, t => runRejectionTests(t, nest, esm, 'fastify'));
+for (const [build, lib] of [['CommonJS', cjs], ['ESM', esm]]) {
+  test(`rejections on Express, ${build} build, NestJS ${expectedMajor}`, t => runRejectionTests(t, nest, lib, 'express'));
+  test(`rejections on Fastify, ${build} build, NestJS ${expectedMajor}`, t => runRejectionTests(t, nest, lib, 'fastify'));
+}

@@ -4,7 +4,7 @@
 // run with that Yarn (via corepack), under Plug'n'Play; the rest use pnpm.
 // Usage: node scripts/test-matrix.mjs [nest10.0.0 nest10 nest11 nest12-yarn-berry ...]
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const matrixDir = 'test/matrix';
@@ -38,6 +38,9 @@ for (const project of projects) {
 
   // --force re-extracts the tarball, which keeps the same path between runs
   run('pnpm', ['install', '--force', '--reporter=silent'], { cwd: dir });
-  run('node_modules/.bin/tsc', ['-p', dir]);
+  // A project can pin its own TypeScript, e.g. nest10.0.0 uses the 5.1 its
+  // NestJS was built with; otherwise use the repository's.
+  const projectTsc = join(dir, 'node_modules/.bin/tsc');
+  run(existsSync(projectTsc) ? projectTsc : 'node_modules/.bin/tsc', ['-p', dir]);
   run('node', testArgs, { env: { ...process.env, NEST_MATRIX_DIR: dir } });
 }

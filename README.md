@@ -586,7 +586,9 @@ logged.
   the library, installs the tarball into each `test/matrix` project and runs the
   same tests on Express and Fastify, plus a type-check of typical app code
   (including Fastify-typed code). `nestNN` projects use the
-  latest release of that major; `nest10.0.0` pins the oldest supported release;
+  latest release of that major; `nest10.0.0` pins the oldest supported release,
+  type-checked with the TypeScript 5.1 that NestJS 10.0.0 was built with (plus
+  NestJS's own 10.0.1 typing fix, applied as a patch);
   `nest12-yarn-berry` installs with Yarn 4 under strict Plug'n'Play (no
   fallback) and type-checks with Yarn's patched TypeScript 5.9, to catch
   undeclared dependencies.

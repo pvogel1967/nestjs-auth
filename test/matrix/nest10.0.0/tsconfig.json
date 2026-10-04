@@ -1,7 +1,4 @@
 {
   "extends": "../tsconfig.consumer.json",
-  // @nestjs/common 10.0.0's own file validator typings fail under TypeScript 7;
-  // the newer majors keep checking every .d.ts, including this library's.
-  "compilerOptions": { "skipLibCheck": true },
   "files": ["consumer.ts"]
 }

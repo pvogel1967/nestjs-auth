@@ -27,6 +27,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          # nothing here pushes to git, so don't leave the token configured
+          persist-credentials: false
       - uses: jdx/mise-action@v5
 
       - name: Check the tag matches package.json
