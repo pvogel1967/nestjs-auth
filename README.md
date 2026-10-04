@@ -75,7 +75,7 @@ export type AppRightsTree = RightsTree<AppIdentity>;
 
 **2. Create the registry.** An authenticator returns `null` when a request isn't
 its kind of caller, `false` when it is but the credentials are bad (a 401), or a
-bill. The registry asks each one in turn.
+bill. The registry asks them in ascending `order`.
 
 ```ts
 // authx.registry.ts
@@ -89,17 +89,23 @@ export type Authenticator = (headers: AuthHeaders, request: Request) => Promise<
 
 @Injectable()
 export class AuthxRegistry {
-  private readonly authenticators = new Map<string, Authenticator>();
+  private readonly authenticators: Array<{ name: string; order: number; authenticator: Authenticator }> = [];
   private readonly roots: Record<string, AppRightsTree> = {};
 
   /** The live tree: branches registered later are visible to the interceptor. */
   readonly tree: AppRightsTree = { children: this.roots };
 
-  addAuthenticator(name: string, authenticator: Authenticator) {
-    if (this.authenticators.has(name)) {
-      throw new Error(`Authenticator '${name}' is already registered`);
+  /**
+   * Lower `order` runs first. That's the precedence rule for a request carrying
+   * more than one kind of credential, so it's explicit rather than depending on
+   * the order NestJS happens to construct providers in.
+   */
+  addAuthenticator(name: string, order: number, authenticator: Authenticator) {
+    if (this.authenticators.some(entry => entry.name === name || entry.order === order)) {
+      throw new Error(`Authenticator '${name}', or one with order ${order}, is already registered`);
     }
-    this.authenticators.set(name, authenticator);
+    this.authenticators.push({ name, order, authenticator });
+    this.authenticators.sort((a, b) => a.order - b.order);
   }
 
   addToRightsTree(scopeRoot: string, branch: AppRightsTree) {
@@ -114,7 +120,7 @@ export class AuthxRegistry {
    * chain; `null` from every authenticator means an anonymous caller.
    */
   async authenticate(headers: AuthHeaders, request: Request): Promise<AppIdentifiedBill | false | null> {
-    for (const authenticator of this.authenticators.values()) {
+    for (const { authenticator } of this.authenticators) {
       const result = await authenticator(headers, request);
       if (result !== null) {
         return result;
@@ -130,7 +136,15 @@ export class AuthxModule {}
 ```
 
 **3. Plug in an authenticator for each kind of caller.** Each one claims
-requests by a different header, so the order they register in doesn't matter.
+requests by its own header, but a single request can carry both. `order`
+decides those requests: the lowest-ordered authenticator that claims the
+request answers for it, and because `false` stops the chain, an invalid
+credential is never skipped in favor of a valid one further down. Here the
+internal-service authenticator (order 10) runs before the user one (order 20),
+so a bad service key fails the request even alongside a valid user token.
+Credentials further down the chain aren't examined once an authenticator has
+answered, so a valid service key alongside a bogus user token authenticates as
+the service.
 
 ```ts
 // user.authenticator.ts
@@ -142,7 +156,7 @@ import { SessionService } from './session.service';
 @Injectable()
 export class UserAuthenticator {
   constructor(registry: AuthxRegistry, private readonly sessions: SessionService) {
-    registry.addAuthenticator('user', headers => this.authenticate(headers));
+    registry.addAuthenticator('user', 20, headers => this.authenticate(headers));
   }
 
   private async authenticate(headers: AuthHeaders): Promise<UserBill | false | null> {
@@ -182,7 +196,7 @@ export class InternalServiceAuthenticator {
     private readonly config: InternalServicesConfig,
     private readonly scopes: ServiceScopeRepository,
   ) {
-    registry.addAuthenticator('internal-service', headers => this.authenticate(headers));
+    registry.addAuthenticator('internal-service', 10, headers => this.authenticate(headers));
   }
 
   private async authenticate(headers: AuthHeaders): Promise<InternalServiceBill | false | null> {
@@ -191,7 +205,11 @@ export class InternalServiceAuthenticator {
       return null;
     }
     const key = headers[SERVICE_KEY_HEADER];
-    const secret = typeof serviceName === 'string' ? this.config.secrets[serviceName] : undefined;
+    // Own properties only, so a name like `constructor` isn't mistaken for a known service.
+    const secret =
+      typeof serviceName === 'string' && Object.hasOwn(this.config.secrets, serviceName)
+        ? this.config.secrets[serviceName]
+        : undefined;
     if (typeof serviceName !== 'string' || typeof key !== 'string' || !secret || !safeEqual(key, secret)) {
       return false;
     }
@@ -336,7 +354,7 @@ and the `reporting` service's are `workouts/list`:
 | `GET /workouts/42`, owner or admin | 200 |
 | `GET /workouts/42`, `billing` service | 200 |
 | `GET /workouts/42`, `reporting` service | 403 (not in its grants) |
-| `GET /workouts/42`, `billing` with the wrong key, or an unknown service | 401 |
+| `GET /workouts/42`, `billing` with the wrong key, or an unknown service (including names like `constructor`) | 401 |
 | A handler with no `@AuthzScope()` | 500 (the handler never runs) |
 
 > **Keep the registry, the authenticators, the services that register
