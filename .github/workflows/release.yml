@@ -1,4 +1,5 @@
-# Publishes to npm when a `v<version>` tag is pushed. This is the only way the
+# Publishes to npm when a `v<version>` tag is pushed, then creates the GitHub
+# release from the version's README changelog entry. This is the only way the
 # package gets published; there is no local publish path.
 name: Release
 
@@ -40,8 +41,48 @@ jobs:
             exit 1
           fi
 
+      # Before publishing, so a release without release notes never reaches npm.
+      - name: Check the changelog has an entry for this version
+        run: node scripts/release-notes.mjs "${GITHUB_REF_NAME}" > /dev/null
+
       - run: pnpm install --frozen-lockfile
 
       # npm (not pnpm) because npm's CLI performs the trusted-publishing OIDC exchange.
-      # Access and provenance come from publishConfig in package.json.
-      - run: npm publish
+      # Access and provenance come from publishConfig in package.json. Skipping an
+      # already-published version makes re-running a release, or tagging one after
+      # the fact, safe. `npm view` exits 1 both when the version doesn't exist and
+      # when the registry can't be reached, so only an E404 counts as "not published".
+      - name: Publish to npm
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if lookup="$(npm view "@pvogel/nestjs-auth@${version}" version 2>&1)"; then
+            echo "::notice::@pvogel/nestjs-auth@${version} is already on npm; not publishing it again"
+          elif grep -q 'E404' <<< "${lookup}"; then
+            npm publish
+          else
+            echo "::error::Couldn't check whether @pvogel/nestjs-auth@${version} is already on npm"
+            echo "${lookup}"
+            exit 1
+          fi
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      # only this job can write to the repo, and only to create the release
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Create the GitHub release from the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            echo "::notice::Release ${GITHUB_REF_NAME} already exists"
+            exit 0
+          fi
+          node scripts/release-notes.mjs "${GITHUB_REF_NAME}" > release-notes.md
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --title "${GITHUB_REF_NAME}" --notes-file release-notes.md
