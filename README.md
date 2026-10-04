@@ -10,7 +10,9 @@ January 2026. It is not affiliated with or endorsed by Ed Ropple; please report
 issues, including security issues, to
 [pvogel1967/nestjs-auth](https://github.com/pvogel1967/nestjs-auth/issues).
 Coming from `@eropple/nestjs-auth`? See [the 0.10.0 changes](#0100-first-release-of-the-fork);
-otherwise it's a matter of changing the import path.
+otherwise it's a matter of changing the import path.  
+
+Beyond simply updating the original library to support modern node patterns and NestJS versions, this version introduces some _optional_ pluggable patterns that we've built in 6 years of building multiple production services supporting millions of users that rely on this library for AuthX.
 
 ## Why use it ##
 - **Fail-closed.** Every handler requires an authenticated caller unless it opts
@@ -35,11 +37,27 @@ otherwise it's a matter of changing the import path.
 
 ## Install ##
 ```bash
+# npm
+npm install @pvogel/nestjs-auth
+
+# pnpm
 pnpm add @pvogel/nestjs-auth
+
+# Yarn 1 (classic)
+yarn add @pvogel/nestjs-auth
+
+# Yarn 2+ (Berry)
+yarn add @pvogel/nestjs-auth
 ```
 
 Peer dependencies: `@nestjs/common` and `@nestjs/core` 10 or newer, `rxjs` 7 and
-`reflect-metadata`.
+`reflect-metadata`. A NestJS app already has all four. npm 7+ and pnpm install
+missing peers automatically; Yarn doesn't, so outside an existing NestJS app add
+them yourself:
+
+```bash
+yarn add @nestjs/common @nestjs/core reflect-metadata rxjs
+```
 
 ## Quick start ##
 The example below serves workouts to two kinds of caller: signed-in users, and
@@ -371,10 +389,13 @@ logged.
 ## Development ##
 - `pnpm test` builds and runs the tests against both builds on the NestJS
   version in `devDependencies`.
-- `pnpm test:matrix [nest10.0.0 nest10 nest11 nest12]` packs the library,
-  installs the tarball into each `test/matrix` project and runs the same tests,
-  plus a type-check of typical app code. `nestNN` projects use the latest
-  release of that major; `nest10.0.0` pins the oldest supported release.
+- `pnpm test:matrix [nest10.0.0 nest10 nest11 nest12 nest12-yarn-berry]` packs
+  the library, installs the tarball into each `test/matrix` project and runs the
+  same tests, plus a type-check of typical app code. `nestNN` projects use the
+  latest release of that major; `nest10.0.0` pins the oldest supported release;
+  `nest12-yarn-berry` installs with Yarn 4 under strict Plug'n'Play (no
+  fallback) and type-checks with Yarn's patched TypeScript 5.9, to catch
+  undeclared dependencies.
 - `pnpm check:exports` validates the `exports` map with
   [`@arethetypeswrong/cli`](https://github.com/arethetypeswrong/arethetypeswrong.github.io).
 - CI (`.github/workflows/ci.yml`) runs lint, tests, the exports check and the
@@ -402,6 +423,9 @@ Releases are published by GitHub Actions only, never from a local machine:
   `AuthxRegistry`, and rejects misconfigurations at startup. Using
   `HttpAuthxInterceptor` directly still works. `@nestjs/core` is now a peer
   dependency.
+- `@types/express` is declared as an optional peer dependency, so the
+  published typings resolve under Yarn Plug'n'Play without relying on its
+  fallback.
 - `principalFn` (and `@Authenticator().authenticate`) receives the
   `ExecutionContext` as a fourth argument, so credential sources that work
   from Nest's context can plug in. Existing three-argument functions are

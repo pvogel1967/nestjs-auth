@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url';
 
 const dir = resolve(process.env.NEST_MATRIX_DIR);
 // nestNN tests the latest NN.x; nestNN.N.N pins an exact release, e.g. the supported floor
-const [, majorText, pinned] = /nest(\d+)((?:\.\d+){2})?$/.exec(dir);
+// an optional suffix names a package-manager variant, e.g. nest12-yarn-berry
+const [, majorText, pinned] = /nest(\d+)((?:\.\d+){2})?(?:-[a-z-]+)?$/.exec(dir);
 const expectedMajor = Number(majorText);
 const expectedVersion = pinned ? `${majorText}${pinned}` : undefined;
 const projectRequire = createRequire(join(dir, 'package.json'));

@@ -7,3 +7,6 @@ node_modules
 pnpm-debug.log*
 .matrix/
 test/matrix/*/consumer.ts
+test/matrix/*/yarn.lock
+test/matrix/*/.yarn/
+test/matrix/*/.pnp.*

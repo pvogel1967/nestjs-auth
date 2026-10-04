@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [nest10.0.0, nest10, nest11, nest12]
+        project: [nest10.0.0, nest10, nest11, nest12, nest12-yarn-berry]
     name: nestjs (${{ matrix.project }})
     steps:
       - uses: actions/checkout@v7
