@@ -112,6 +112,16 @@ describe('the search-indexer service', () => {
     assert.equal((await call('PATCH', '/notes/2', indexer(), { text: 'nope' })).status, 403);
     assert.equal((await call('GET', '/me', indexer())).status, 403);
   });
+  test('takes precedence over a user token, which is then never examined', async () => {
+    const res = await call('GET', '/notes/2', { ...indexer(), authorization: 'Bearer not-a-session' });
+    assert.equal(res.status, 200);
+  });
+  test('is unknown under an inherited property name like constructor', async () => {
+    for (const name of ['constructor', 'toString', '__proto__']) {
+      const res = await call('GET', '/notes/1', { [SERVICE_NAME_HEADER]: name, [SERVICE_KEY_HEADER]: 'x' });
+      assert.equal(res.status, 401, name);
+    }
+  });
   test('with the wrong secret gets a 401, even alongside a valid user token', async () => {
     assert.equal((await call('GET', '/notes/1', indexer('wrong'))).status, 401);
     assert.equal((await call('GET', '/notes/1', { ...indexer('wrong'), ...(await login('alice')) })).status, 401);

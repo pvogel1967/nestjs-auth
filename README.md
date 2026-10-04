@@ -153,6 +153,16 @@ non-`null` answer wins, and `null` from all of them means an anonymous caller.
 `authenticate` receives the headers, parsed cookies, the request and the
 `ExecutionContext`; use whichever you need.
 
+`order` is also the precedence rule when a single request carries more than
+one kind of credential. The lowest-ordered authenticator that claims the
+request answers for it, and because `false` stops the chain, an invalid
+credential is never skipped in favor of a valid one further down. Here the
+internal-service authenticator (order 10) runs before the user one (order 20),
+so a bad service key fails the request even alongside a valid user token.
+Credentials further down the chain aren't examined once an authenticator has
+answered, so a valid service key alongside a bogus user token authenticates as
+the service.
+
 ```ts
 // example/src/users/user.authenticator.ts
 import { Injectable } from '@nestjs/common';
@@ -233,7 +243,11 @@ export class InternalServiceAuthenticator implements AuthxAuthenticator<AppIdent
       return null;
     }
     const key = headers[SERVICE_KEY_HEADER];
-    const secret = typeof serviceName === 'string' ? this.config.secrets[serviceName] : undefined;
+    // Own properties only, so a name like `constructor` isn't mistaken for a known service.
+    const secret =
+      typeof serviceName === 'string' && Object.hasOwn(this.config.secrets, serviceName)
+        ? this.config.secrets[serviceName]
+        : undefined;
     if (typeof serviceName !== 'string' || typeof key !== 'string' || !secret || !safeEqual(key, secret)) {
       return false;
     }
@@ -417,6 +431,8 @@ and private, and `root` is an admin. Every row is covered by the example's
 | `GET /notes/2` as `search-indexer` | 200 |
 | `GET /notes` or `PATCH /notes/2` as `search-indexer` | 403 (not in its grants) |
 | `search-indexer` with the wrong secret, even plus a valid user token | 401 (`false` stops the chain) |
+| `search-indexer` plus a bogus user token | 200 as the service (lower `order` answers first) |
+| An unknown service name, including `constructor` | 401 |
 | `GET /health`, even with bad credentials | 200 (`@AuthnSkip()`) |
 
 ### What `AuthxModule` checks at startup ###

@@ -9,7 +9,9 @@ export interface AuthenticatorOptions {
   /** Unique name, used in startup errors and `expectAuthenticators`. */
   name: string;
   /**
-   * Position in the chain; lower runs first. Must be unique across
+   * Position in the chain; lower runs first. This is the precedence rule for a
+   * request carrying more than one kind of credential: the first authenticator
+   * to answer decides, and the rest aren't consulted. Must be unique across
    * authenticators. Defaults to 0.
    */
   order?: number;

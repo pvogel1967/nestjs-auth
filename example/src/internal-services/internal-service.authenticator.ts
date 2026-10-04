@@ -24,7 +24,11 @@ export class InternalServiceAuthenticator implements AuthxAuthenticator<AppIdent
       return null;
     }
     const key = headers[SERVICE_KEY_HEADER];
-    const secret = typeof serviceName === 'string' ? this.config.secrets[serviceName] : undefined;
+    // Own properties only, so a name like `constructor` isn't mistaken for a known service.
+    const secret =
+      typeof serviceName === 'string' && Object.hasOwn(this.config.secrets, serviceName)
+        ? this.config.secrets[serviceName]
+        : undefined;
     if (typeof serviceName !== 'string' || typeof key !== 'string' || !secret || !safeEqual(key, secret)) {
       return false;
     }
