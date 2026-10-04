@@ -1,0 +1,2 @@
+# Early-init settings (top-level keys only; a [settings] table is silently ignored here)
+override_tool_versions_filenames = []

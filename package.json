@@ -14,8 +14,8 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "lint": "tslint -p .",
     "build": "tsc",
-    "watch": "yarn run --silent build --watch",
-    "prepare": "yarn lint && yarn build"
+    "watch": "pnpm --silent build --watch",
+    "prepare": "pnpm lint && pnpm build"
   },
   "peerDependencies": {
     "@nestjs/common": ">=7",
