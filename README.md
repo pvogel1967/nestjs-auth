@@ -616,8 +616,11 @@ Releases are published by GitHub Actions only, never from a local machine:
 1. Bump `version` in `package.json`, update the changelog, and merge to `main`.
 2. Tag the merge commit `v<version>` and push the tag.
    `.github/workflows/release.yml` reruns CI, checks the tag matches
-   `package.json`, and runs `npm publish` with provenance via npm trusted
-   publishing (OIDC); no npm token is stored.
+   `package.json` and that the changelog has an entry for it, and runs
+   `npm publish` with provenance via npm trusted publishing (OIDC); no npm
+   token is stored. It then creates the GitHub release, using the changelog
+   entry as its notes (`node scripts/release-notes.mjs <version>` previews
+   them).
 
 ## Changelog ##
 #### 0.10.1 ####
