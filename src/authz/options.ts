@@ -1,6 +1,6 @@
-import { IdentityBill } from '../types';
-import { RightsTree } from './rights-tree';
-import { IdentifiedExpressRequest } from '../helper-types';
+import { IdentityBill } from '../types.js';
+import { RightsTree } from './rights-tree.js';
+import { IdentifiedExpressRequest } from '../helper-types.js';
 
 export interface HttpAuthzOptions<TIdentity extends IdentityBill> {
   /**

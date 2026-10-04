@@ -1,0 +1,5 @@
+# Each matrix project resolves the latest release of its NestJS major against
+# the freshly packed tarball, so there's no lockfile to keep in sync.
+lockfile: false
+allowBuilds:
+  '@nestjs/core': false

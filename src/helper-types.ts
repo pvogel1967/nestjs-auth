@@ -1,10 +1,8 @@
-import { Request as ExpressRequest } from 'express';
+import type { Request as ExpressRequest } from 'express';
 
-import { IdentityBill } from './types';
+import { IdentityBill } from './types.js';
 
-// tslint:disable-next-line: interface-over-type-literal
 export type StringTo<T> = { [key: string]: T };
-// tslint:disable-next-line: interface-over-type-literal
 export type IdentityTag<TIdentity extends IdentityBill = IdentityBill> = {
   identity: TIdentity;
 };

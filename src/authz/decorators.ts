@@ -1,7 +1,7 @@
-import { AUTHZ_SCOPES } from '../metadata-keys';
-import { IdentifiedExpressRequest } from '../helper-types';
-import { IdentityBill, AnyCtor } from '../types';
-import { AppendArrayMetadata, getAllMetadata, getAllPropertyMetadata } from '../metadata';
+import { AUTHZ_SCOPES } from '../metadata-keys.js';
+import { IdentifiedExpressRequest } from '../helper-types.js';
+import { IdentityBill, AnyCtor } from '../types.js';
+import { AppendArrayMetadata, getAllPropertyMetadata } from '../metadata.js';
 
 export type AuthzScopeArgFn<TIdentity extends IdentityBill = IdentityBill> = (
   req: IdentifiedExpressRequest<TIdentity>,
@@ -17,7 +17,7 @@ export type AuthzScopeArg<TIdentity extends IdentityBill = IdentityBill> =
  * `IncomingMessage` and returns either a scope or a list of scopes.
  *
  * If you return a list of scopes, they are _all required_ in order to allow
- * the requestor to access the resource. `@eropple/nestjs-auth` does not and
+ * the requestor to access the resource. `@pvogel/nestjs-auth` does not and
  * will not provide an "or" function here; that way lies madness.
  *
  * @param scope a scope, a list of scopes, or a function to return the same

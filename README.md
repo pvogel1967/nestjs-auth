@@ -1,11 +1,271 @@
-# `@eropple/nestjs-auth` #
-[![npm version](https://badge.fury.io/js/%40eropple%2Fnestjs-auth.svg)](https://badge.fury.io/js/%40eropple%2Fnestjs-auth)
+# `@pvogel/nestjs-auth` #
+[![npm version](https://badge.fury.io/js/%40pvogel%2Fnestjs-auth.svg)](https://badge.fury.io/js/%40pvogel%2Fnestjs-auth)
 
-## Current Status ##
-`0.6.x` is being used, in anger, on multiple production apps, at my current
-employer and by other NestJS users.
+Authentication and authorization for NestJS 10+ HTTP apps: one interceptor, a
+handful of decorators, and a rights tree that your own services fill in.
 
-### Recent Changes ###
+This is a maintained fork of Ed Ropple's
+[`@eropple/nestjs-auth`](https://github.com/eropple/nestjs-auth), archived in
+January 2026. It is not affiliated with or endorsed by Ed Ropple; please report
+issues, including security issues, to
+[pvogel1967/nestjs-auth](https://github.com/pvogel1967/nestjs-auth/issues).
+Coming from `@eropple/nestjs-auth`? See [the 0.10.0 changes](#0100-first-release-of-the-fork);
+otherwise it's a matter of changing the import path.
+
+## Why use it ##
+- **Fail-closed.** Every handler requires an authenticated caller unless it opts
+  out with `@AuthnOptional()`, `@AuthnDisallowed()` or `@AuthnSkip()`, and every
+  handler must declare what it needs with `@AuthzScope()`. A handler that's
+  missing its scope is never run: the request fails with a 500, so the omission
+  shows up the first time the route is exercised instead of quietly allowing
+  access.
+- **Beyond roles: attribute-based access control.** An identity's _grants_ say
+  what it may ask for, as OAuth-style scopes with globs (`workouts/**/*`). The
+  _rights tree_ then decides each request from attributes of the caller and the
+  resource, such as whether the `workoutId` in the URL belongs to the caller.
+  Checks are ordinary async TypeScript functions, so there's no policy language
+  or external service to run.
+- **Small and unopinionated.** You define what an identity is and how it's
+  authenticated. ESM and CommonJS builds, any logger, and tests against NestJS
+  10, 11 and 12. Express only.
+
+## Install ##
+```bash
+pnpm add @pvogel/nestjs-auth
+```
+
+Peer dependencies: `@nestjs/common` 10 or newer, `rxjs` 7 and `reflect-metadata`.
+
+## Quick start ##
+The pattern below keeps authorization next to the code it protects: a
+singleton registry owns the rights tree, and each feature service registers its
+own branch of the tree in its constructor.
+
+**1. Define your identities.**
+
+```ts
+// identity.ts
+import { AnonymousBill, IdentifiedBill, type RightsTree } from '@pvogel/nestjs-auth';
+
+export interface User {
+  id: string;
+  admin: boolean;
+}
+
+/** An authenticated user: the principal, its credential, and its grants. */
+export class UserBill extends IdentifiedBill<User, string> {}
+export type AppIdentity = UserBill | AnonymousBill;
+export type AppRightsTree = RightsTree<AppIdentity>;
+```
+
+**2. Create a registry for the rights tree.**
+
+```ts
+// rights-tree.registry.ts
+import { Global, Injectable, Module } from '@nestjs/common';
+import type { AppRightsTree } from './identity';
+
+@Injectable()
+export class RightsTreeRegistry {
+  private readonly roots: Record<string, AppRightsTree> = {};
+
+  /** The live tree: branches registered later are visible to the interceptor. */
+  readonly tree: AppRightsTree = { children: this.roots };
+
+  register(scopeRoot: string, branch: AppRightsTree) {
+    if (this.roots[scopeRoot]) {
+      throw new Error(`Rights tree already has a '${scopeRoot}' branch`);
+    }
+    this.roots[scopeRoot] = branch;
+  }
+}
+
+@Global()
+@Module({ providers: [RightsTreeRegistry], exports: [RightsTreeRegistry] })
+export class RightsTreeModule {}
+```
+
+**3. Register a branch from the service that owns the resource.**
+
+```ts
+// workouts.service.ts
+import { Injectable } from '@nestjs/common';
+import { RightsTreeRegistry } from './rights-tree.registry';
+import { WorkoutRepository } from './workout.repository';
+
+@Injectable()
+export class WorkoutsService {
+  constructor(registry: RightsTreeRegistry, private readonly workouts: WorkoutRepository) {
+    registry.register('workouts', {
+      children: {
+        // workouts/list
+        list: { right: () => true },
+      },
+      // workouts/<workoutId>/view
+      wildcard: {
+        // `context` can deny early; only a `right` can allow.
+        context: async (workoutId, req) =>
+          req.identity.isIdentified &&
+          (req.identity.principal.admin || (await this.workouts.ownerOf(workoutId)) === req.identity.principal.id),
+        children: { view: { right: () => true } },
+      },
+    });
+  }
+}
+```
+
+**4. Decorate the controller.**
+
+```ts
+// workouts.controller.ts
+import { Controller, Get, Param } from '@nestjs/common';
+import { AuthnOptional, AuthnSkip, AuthzScope, Identity, type IdentifiedExpressRequest } from '@pvogel/nestjs-auth';
+import type { AppIdentity, UserBill } from './identity';
+
+@Controller('workouts')
+export class WorkoutsController {
+  @Get()
+  @AuthnOptional() // anonymous callers get `anonymousScopes`
+  @AuthzScope('workouts/list')
+  list() {
+    return [];
+  }
+
+  @Get('health')
+  @AuthnSkip() // no authentication or authorization at all
+  health() {
+    return { ok: true };
+  }
+
+  @Get(':workoutId')
+  @AuthzScope((req: IdentifiedExpressRequest<AppIdentity>) => `workouts/${req.params.workoutId}/view`)
+  get(@Param('workoutId') workoutId: string, @Identity() identity: UserBill) {
+    return { workoutId, viewer: identity.principal.id };
+  }
+}
+```
+
+**5. Install the interceptor globally.**
+
+```ts
+// app.module.ts
+import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { HttpAuthxInterceptor } from '@pvogel/nestjs-auth';
+import { type AppIdentity, UserBill } from './identity';
+import { RightsTreeModule, RightsTreeRegistry } from './rights-tree.registry';
+import { SessionService } from './session.service';
+import { WorkoutsModule } from './workouts.module';
+
+@Module({
+  imports: [RightsTreeModule, WorkoutsModule],
+  providers: [
+    SessionService,
+    {
+      provide: APP_INTERCEPTOR,
+      inject: [RightsTreeRegistry, SessionService],
+      useFactory: (registry: RightsTreeRegistry, sessions: SessionService) =>
+        new HttpAuthxInterceptor<AppIdentity, UserBill>({
+          authn: {
+            principalFn: async headers => {
+              const token = headers.authorization;
+              if (typeof token !== 'string') {
+                return null; // anonymous
+              }
+              const user = await sessions.userForToken(token);
+              if (!user) {
+                return false; // bad credentials: 401
+              }
+              return new UserBill(user, token, user.admin ? ['**/*'] : ['workouts/**/*']);
+            },
+            anonymousScopes: ['workouts/list'],
+          },
+          authz: { tree: registry.tree },
+        }),
+    },
+  ],
+})
+export class AppModule {}
+```
+
+The result:
+
+| Request | Response |
+|---|---|
+| `GET /workouts`, no token | 200 (anonymous scopes allow `workouts/list`) |
+| `GET /workouts/42`, no token | 401 (authentication required) |
+| `GET /workouts/42`, invalid token | 401 |
+| `GET /workouts/42`, user who doesn't own workout 42 | 403 (rights tree denies) |
+| `GET /workouts/42`, owner or admin | 200 |
+| A handler with no `@AuthzScope()` | 500 (the handler never runs) |
+
+> **Keep the registry, the services that register branches, and the
+> interceptor provider at NestJS's default (singleton) scope.** Branches are
+> registered in constructors, and a request-scoped provider is constructed on
+> every request. So is anything that injects one, because request scope
+> propagates up the dependency chain. That would re-register branches (an error
+> with the registry above) and rebuild the interceptor for every call. Rights
+> functions are passed the request, so they don't need request-scoped
+> dependencies to use request data.
+
+## Logging ##
+`HttpAuthxInterceptor` accepts an optional `logger` implementing `AuthxLogger`:
+`trace(message, fields?)` and `debug(message, fields?)`. Adapters cover the two
+common calling conventions without depending on any logging library:
+
+```ts
+import { messageFirstLogger, objectFirstLogger } from '@pvogel/nestjs-auth';
+
+// pino, bunyan: logger.debug({ ...fields }, message)
+new HttpAuthxInterceptor({ logger: objectFirstLogger(pinoLogger), /* ... */ });
+
+// winston, console: logger.debug(message, { ...fields }); `trace` falls back to `debug` if absent
+new HttpAuthxInterceptor({ logger: messageFirstLogger(winstonLogger), /* ... */ });
+```
+
+Anything else can implement `AuthxLogger` directly. Without a logger, nothing is
+logged.
+
+## Development ##
+- `pnpm test` builds and runs the tests against both builds on the NestJS
+  version in `devDependencies`.
+- `pnpm test:matrix [nest10 nest11 nest12]` packs the library, installs the
+  tarball into each `test/matrix/nestNN` project and runs the same tests, plus a
+  type-check of typical app code, against that NestJS major.
+- `pnpm check:exports` validates the `exports` map with
+  [`@arethetypeswrong/cli`](https://github.com/arethetypeswrong/arethetypeswrong.github.io).
+- CI (`.github/workflows/ci.yml`) runs lint, tests, the exports check and the
+  NestJS matrix on every push to `main` and every pull request.
+- `tsc` is TypeScript 7. ESLint's typescript-eslint still needs the TypeScript 6
+  JavaScript API, so `typescript` is aliased to `@typescript/typescript6` and
+  TypeScript 7 is installed as `@typescript/native`.
+
+### Releasing ###
+Releases are published by GitHub Actions only, never from a local machine:
+
+1. Bump `version` in `package.json`, update the changelog, and merge to `main`.
+2. Tag the merge commit `v<version>` and push the tag.
+   `.github/workflows/release.yml` reruns CI, checks the tag matches
+   `package.json`, and runs `npm publish` with provenance via npm trusted
+   publishing (OIDC); no npm token is stored.
+
+## Changelog ##
+#### 0.10.0 (first release of the fork) ####
+- **Requires NestJS 10 or newer.** CI-style matrix tests run against the latest
+  NestJS 10, 11 and 12 releases (`pnpm test:matrix`). The minor version tracks
+  the minimum NestJS major.
+- **Ships both ESM and CommonJS builds** behind an `exports` map. Bills from
+  either build are accepted by the interceptor from the other, so an app that
+  ends up loading both still authenticates correctly.
+- **Logging no longer depends on bunyan.** `logger` takes an `AuthxLogger`;
+  see [Logging](#logging). The never-read `authn.logger` option is removed.
+- The default 401 body is now `{ "error": "Unauthorized." }`; it previously
+  said `Forbidden.`, the same as a 403. Custom `unauthorizedResponse` bodies
+  are unaffected.
+- lodash and bunyan dropped as dependencies; `cookie` updated to 1.x.
+
+> _Entries from 0.6.0 down are from the original project._
+
 #### 0.6.0 ####
 - **Now requires NestJS 7. Sorry about that. They broke compatibility.**
 - Fixed breaking changes going to NestJS 7. NestJS 6 should remain on `0.5.2`.
@@ -35,7 +295,7 @@ employer and by other NestJS users.
 #### 0.4.0 ####
 - Added `unauthorizedResponse` and `forbiddenResponse` to the interceptor's
   options. These allow you to customize the output of 401s and 403s emitted by
-  `@eropple/nestjs-auth` such that they can be predictable shapes in your
+  `@pvogel/nestjs-auth` such that they can be predictable shapes in your
   codebase. This feature is designed to be used with
   [@eropple/nestjs-openapi3](https://github.com/eropple/nestjs-openapi3) so that
   you can easily provide a typed schema for your errors, but the world is your
@@ -66,7 +326,19 @@ employer and by other NestJS users.
   encourage consumers to define their own top-level types and use them in their
   applications.
 
+---
+
+_The rest of this README is the original documentation by Ed Ropple,
+lightly updated for the new package name._
+
+## Current Status ##
+> _Ed Ropple's status note from the original project, as of 0.6.x._
+
+`0.6.x` is being used, in anger, on multiple production apps, at my current
+employer and by other NestJS users.
+
 ## Introduction ##
+> _From the original README by Ed Ropple; first-person remarks are his._
 
 Authentication and authorization on the web sucks.
 
@@ -93,7 +365,7 @@ In my NestJS travels, I haven't found something that hits the important bits:
   exactly why you need JWT and even then use something better, like
   [PASETO](https://paseto.io/), intead--makes me uncomfortable.
 - **Fall into correctness.** It should be hard to do the wrong thing. By opting
-  into `@eropple/nestjs-auth`, you should have a secure-by-default auth scheme
+  into `@pvogel/nestjs-auth`, you should have a secure-by-default auth scheme
   and you should have to _explicitly_ opt out, whether to a less secure mode for
   a particular handler or to a completely unsecured mode. (This is the same
   principle behind
@@ -116,20 +388,16 @@ This is my take on attacking the problem. Not "once and for all," but maybe
 Fastify support is out of my personal scope for it; if you'd like it, I am happy
 to accept PRs.
 
-## Installation ##
-It's an NPM package. It's called `@eropple/nestjs-auth`. Wield your package
-manager of choice and install it.
-
-Just remember that you gotta have NestJS 6.5 or newer to make this work.
-
 ## Usage ##
+> _From the original README by Ed Ropple; first-person remarks are his._
+
 **Before you read all this:** code can speak for itself. Please consider
 checking out
 [@eropple/nestjs-auth-example](https://github.com/eropple/nestjs-auth-example);
 it is _exhaustively_ commented and has end-to-end tests that demonstrate
-`@eropple/nestjs-auth`'s completeness.
+`@pvogel/nestjs-auth`'s completeness.
 
-`@eropple/nestjs-auth` provides the building blocks, but because of its focus on
+`@pvogel/nestjs-auth` provides the building blocks, but because of its focus on
 extensibility--not prescribing to you how your domain objects should work--I'm
 afraid you're going to have to do the wire-up yourself. Don't worry: it's easy,
 and if it shows you some stuff you're unfamiliar with you're going to benefit
@@ -141,7 +409,7 @@ as a guard it'd mean that you couldn't put a logging interceptor around requests
 that are rejected. It's harder to debug and harder to reason about.)
 
 ### How It Works ###
-There's perilously little magic in `@eropple/nestjs-auth`. It provides one
+There's perilously little magic in `@pvogel/nestjs-auth`. It provides one
 interceptor, `HttpAuthxInterceptor`, which needs to be attached to a module for
 injection (we'll cover that later). These interceptors use their startup config
 and a set of decorators applied to handler methods to determine who's allowed to
@@ -184,7 +452,7 @@ collapses them into a single interceptor.
 
 
 #### Authorization ####
-`@eropple/nestjs-auth` relies on three concepts for authorization: _scopes_,
+`@pvogel/nestjs-auth` relies on three concepts for authorization: _scopes_,
 _grants_, and _rights_.
 
 ##### Scopes #####
@@ -296,6 +564,15 @@ and that can lead to some confusion. On the other hand, this is the _only_ way
 to assert "everything is authenticated and authorized by default".
 
 ## Future Work ##
+> _Ed Ropple's list from the original project._
+
 - socket.io authorization/authentication
 - tests - the tests for this exist in the original app it was extracted from,
   they need to be cleaned up and made available here.
+
+> **Note from Peter Vogel (0.10.0):** tests now live in this repo. `pnpm test`
+> runs an end-to-end HTTP scenario covering every authentication mode, grants
+> and rights-tree checks against both the ESM and CommonJS builds, plus the
+> logger adapters against real pino, bunyan and winston loggers.
+> `pnpm test:matrix` repeats the scenario, along with a type-check of typical
+> app code, on NestJS 10, 11 and 12. CI runs both on every pull request.

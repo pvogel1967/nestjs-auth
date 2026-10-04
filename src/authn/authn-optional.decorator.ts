@@ -1,7 +1,7 @@
 import { SetMetadata } from '@nestjs/common';
 
-import { AUTHN_STATUS } from '../metadata-keys';
-import { AuthnStatus } from './authn-status.enum';
+import { AUTHN_STATUS } from '../metadata-keys.js';
+import { AuthnStatus } from './authn-status.enum.js';
 
 /**
  * Handlers decorated with `AuthnOptional` may or may not have a full identity
