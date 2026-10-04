@@ -20,18 +20,24 @@ pnpm install && pnpm build
 
 # then from example/
 pnpm install
-pnpm start   # http://localhost:3000 (health check at /health); set PORT to change it
-pnpm test    # end-to-end tests against the running app
+cp sample.env .env
+pnpm start   # http://127.0.0.1:3000, health check at /health
+pnpm test    # end-to-end tests against the running app, using sample.env
 ```
 
-Set `AUTHX_DEBUG=1` to log why requests are denied.
+Settings come from `.env` (ignored by git) and are validated at startup by
+`@nestjs/config`; the app refuses to start, listing what's missing, rather than
+falling back to defaults in code. In production, set them in the real
+environment. `sample.env` binds to `127.0.0.1` because the demo users and
+service secret are published here; set `HOST=0.0.0.0` only if you mean to expose
+it. Set `AUTHX_DEBUG=true` to log why requests are denied.
 
 ## Callers ##
 | Caller | How it authenticates | Grants |
 |---|---|---|
 | `alice`, `bob` | `POST /login` with `{ "username": "alice", "password": "alice" }`, then `Authorization: Bearer <token>` | `me/**/*`, `notes/**/*` |
 | `root` (admin) | Same, with `root` / `root` | `**/*` |
-| `search-indexer` service | `x-service-name: search-indexer` and `x-service-key: local-dev-indexer-secret` | `notes/*/view`, from its stored scopes |
+| `search-indexer` service | `x-service-name: search-indexer` and `x-service-key` set to `SEARCH_INDEXER_SECRET` (`local-dev-indexer-secret` in `sample.env`) | `notes/*/view`, from its stored scopes |
 | Anyone else | No credentials | `login` |
 
 Grants say what a caller may ask for. The rights tree then decides each
@@ -47,23 +53,23 @@ note that doesn't exist gets a 403, not a 404, so IDs can't be probed.
 
 ## Try it ##
 ```bash
-curl -s localhost:3000/notes
+curl -s 127.0.0.1:3000/notes
 ```
 
 ```bash
-TOKEN=$(curl -s -X POST localhost:3000/login -H 'content-type: application/json' -d '{"username":"bob","password":"bob"}' | node -p 'JSON.parse(require("fs").readFileSync(0)).token')
+TOKEN=$(curl -s -X POST 127.0.0.1:3000/login -H 'content-type: application/json' -d '{"username":"bob","password":"bob"}' | node -p 'JSON.parse(require("fs").readFileSync(0)).token')
 ```
 
 ```bash
-curl -s localhost:3000/notes -H "authorization: Bearer $TOKEN"
+curl -s 127.0.0.1:3000/notes -H "authorization: Bearer $TOKEN"
 ```
 
 ```bash
-curl -s -X PATCH localhost:3000/notes/1 -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"text":"hi"}'
+curl -s -X PATCH 127.0.0.1:3000/notes/1 -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"text":"hi"}'
 ```
 
 ```bash
-curl -s localhost:3000/notes/2 -H 'x-service-name: search-indexer' -H 'x-service-key: local-dev-indexer-secret'
+curl -s 127.0.0.1:3000/notes/2 -H 'x-service-name: search-indexer' -H 'x-service-key: local-dev-indexer-secret'
 ```
 
 In order: a 401 without credentials, Bob's two notes, a 403 when Bob edits
@@ -73,7 +79,7 @@ Alice's note, and the indexer reading Bob's private note.
 | Pattern | File |
 |---|---|
 | Identity types (`UserBill`, `InternalServiceBill`) | [`src/identity.ts`](src/identity.ts) |
-| Installing `AuthxModule` | [`src/app.module.ts`](src/app.module.ts) |
+| Installing `AuthxModule` with `forRootAsync` and validated config | [`src/app.module.ts`](src/app.module.ts), [`src/config/env.ts`](src/config/env.ts) |
 | User authenticator (session tokens) | [`src/users/user.authenticator.ts`](src/users/user.authenticator.ts) |
 | Service authenticator (shared secret, stored grants) | [`src/internal-services/internal-service.authenticator.ts`](src/internal-services/internal-service.authenticator.ts) |
 | Authenticators kept private to their own module | [`src/users/users.module.ts`](src/users/users.module.ts) |

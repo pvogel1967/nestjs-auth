@@ -4,6 +4,7 @@ import { after, before, describe, test } from 'node:test';
 import type { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module';
+import { validateEnv } from '../src/config/env';
 import { SERVICE_KEY_HEADER, SERVICE_NAME_HEADER } from '../src/internal-services/internal-service.authenticator';
 
 let app: INestApplication;
@@ -25,7 +26,8 @@ async function login(username: string) {
   return { authorization: `Bearer ${body.token}` };
 }
 
-const indexer = (secret = 'local-dev-indexer-secret') => ({
+// The test script loads sample.env, the same settings a developer copies to .env.
+const indexer = (secret = process.env.SEARCH_INDEXER_SECRET!) => ({
   [SERVICE_NAME_HEADER]: 'search-indexer',
   [SERVICE_KEY_HEADER]: secret,
 });
@@ -36,6 +38,16 @@ before(async () => {
   baseUrl = await app.getUrl();
 });
 after(() => app.close());
+
+describe('configuration', () => {
+  test('is rejected at startup when a setting is missing or invalid', () => {
+    const valid = { PORT: '3000', HOST: '127.0.0.1', SEARCH_INDEXER_SECRET: 'a-secret-of-16-chars' };
+    assert.equal(validateEnv(valid).PORT, 3000);
+    assert.throws(() => validateEnv({ ...valid, SEARCH_INDEXER_SECRET: undefined }), /SEARCH_INDEXER_SECRET/);
+    assert.throws(() => validateEnv({ ...valid, SEARCH_INDEXER_SECRET: 'too-short' }), /SEARCH_INDEXER_SECRET/);
+    assert.throws(() => validateEnv({ ...valid, PORT: 'not-a-port' }), /PORT/);
+  });
+});
 
 describe('anonymous callers', () => {
   test('can reach the health check, even with bad credentials', async () => {

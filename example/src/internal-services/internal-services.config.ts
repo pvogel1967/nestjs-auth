@@ -1,9 +1,13 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { Env } from '../config/env';
 
-/** Per-service shared secrets. Read from the environment in a real deployment. */
+/** Per-service shared secrets, from validated configuration. */
 @Injectable()
 export class InternalServicesConfig {
-  readonly secrets: Readonly<Record<string, string>> = {
-    'search-indexer': process.env.SEARCH_INDEXER_SECRET ?? 'local-dev-indexer-secret',
-  };
+  readonly secrets: Readonly<Record<string, string>>;
+
+  constructor(config: ConfigService<Env, true>) {
+    this.secrets = { 'search-indexer': config.get('SEARCH_INDEXER_SECRET', { infer: true }) };
+  }
 }

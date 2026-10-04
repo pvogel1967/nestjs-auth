@@ -109,7 +109,9 @@ export type AppRightsTree = RightsTree<AppIdentity>;
 ```ts
 // example/src/app.module.ts
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthxModule, messageFirstLogger } from '@pvogel/nestjs-auth';
+import { type Env, validateEnv } from './config/env';
 import { HealthModule } from './health/health.module';
 import { InternalServicesModule } from './internal-services/internal-services.module';
 import { MeModule } from './me/me.module';
@@ -118,13 +120,17 @@ import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
-    AuthxModule.forRoot({
-      // what callers without credentials may ask for
-      anonymousScopes: ['login'],
-      // fail at startup unless both are registered as providers somewhere in the app
-      expectAuthenticators: ['internal-service', 'user'],
-      // set AUTHX_DEBUG=1 to see why requests are denied
-      logger: process.env.AUTHX_DEBUG ? messageFirstLogger(console) : undefined,
+    // fails at startup, listing every missing or invalid setting
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
+    AuthxModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Env, true>) => ({
+        // what callers without credentials may ask for
+        anonymousScopes: ['login'],
+        // fail at startup unless both are registered as providers somewhere in the app
+        expectAuthenticators: ['internal-service', 'user'],
+        logger: config.get('AUTHX_DEBUG', { infer: true }) ? messageFirstLogger(console) : undefined,
+      }),
     }),
     HealthModule,
     InternalServicesModule,
@@ -136,8 +142,12 @@ import { UsersModule } from './users/users.module';
 export class AppModule {}
 ```
 
-`forRootAsync()` takes `imports`, `inject` and `useFactory` (or `useClass`)
-when the options come from configuration.
+The example uses `forRootAsync()` because one option comes from configuration;
+it takes `imports`, `inject` and `useFactory` (or `useClass`). Use `forRoot()`
+when the options are static. The example's settings are validated at startup
+by `@nestjs/config` against [a schema](example/src/config/env.ts), with no
+fallbacks in code, so a missing secret stops the app instead of quietly
+defaulting.
 
 Authenticators don't need to be imported into or exported to `AuthxModule`: it
 finds them wherever they're declared. Each one just has to be listed in the

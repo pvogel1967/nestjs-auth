@@ -10,3 +10,4 @@ test/matrix/*/consumer.ts
 test/matrix/*/yarn.lock
 test/matrix/*/.yarn/
 test/matrix/*/.pnp.*
+.env
