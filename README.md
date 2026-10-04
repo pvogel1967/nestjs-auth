@@ -37,9 +37,12 @@ pnpm add @pvogel/nestjs-auth
 Peer dependencies: `@nestjs/common` 10 or newer, `rxjs` 7 and `reflect-metadata`.
 
 ## Quick start ##
-The pattern below keeps authorization next to the code it protects: a
-singleton registry owns the rights tree, and each feature service registers its
-own branch of the tree in its constructor.
+The example below serves workouts to two kinds of caller: signed-in users, and
+internal services that hold their own least-privilege grants. It keeps each
+concern next to the code that owns it. A singleton registry holds the chain of
+authenticators and the rights tree; each authenticator plugs itself into the
+chain, and each feature service registers its own branch of the tree, from
+their constructors.
 
 **1. Define your identities.**
 
@@ -52,51 +55,175 @@ export interface User {
   admin: boolean;
 }
 
-/** An authenticated user: the principal, its credential, and its grants. */
-export class UserBill extends IdentifiedBill<User, string> {}
-export type AppIdentity = UserBill | AnonymousBill;
+/** A signed-in user: the principal, its credential, and its grants. */
+export class UserBill extends IdentifiedBill<User, string> {
+  readonly kind = 'user';
+}
+
+/** An internal service, identified by name. */
+export class InternalServiceBill extends IdentifiedBill<string, null> {
+  readonly kind = 'service';
+}
+
+export type AppIdentifiedBill = UserBill | InternalServiceBill;
+export type AppIdentity = AppIdentifiedBill | AnonymousBill;
 export type AppRightsTree = RightsTree<AppIdentity>;
 ```
 
-**2. Create a registry for the rights tree.**
+`kind` lets TypeScript narrow an identity to the right principal type, and
+`isIdentified`/`isAnonymous` narrow out anonymous callers.
+
+**2. Create the registry.** An authenticator returns `null` when a request isn't
+its kind of caller, `false` when it is but the credentials are bad (a 401), or a
+bill. The registry asks each one in turn.
 
 ```ts
-// rights-tree.registry.ts
+// authx.registry.ts
 import { Global, Injectable, Module } from '@nestjs/common';
-import type { AppRightsTree } from './identity';
+import type { Request } from 'express';
+import type { StringTo } from '@pvogel/nestjs-auth';
+import type { AppIdentifiedBill, AppRightsTree } from './identity';
+
+export type AuthHeaders = StringTo<string | Array<string> | undefined>;
+export type Authenticator = (headers: AuthHeaders, request: Request) => Promise<AppIdentifiedBill | false | null>;
 
 @Injectable()
-export class RightsTreeRegistry {
+export class AuthxRegistry {
+  private readonly authenticators = new Map<string, Authenticator>();
   private readonly roots: Record<string, AppRightsTree> = {};
 
   /** The live tree: branches registered later are visible to the interceptor. */
   readonly tree: AppRightsTree = { children: this.roots };
 
-  register(scopeRoot: string, branch: AppRightsTree) {
+  addAuthenticator(name: string, authenticator: Authenticator) {
+    if (this.authenticators.has(name)) {
+      throw new Error(`Authenticator '${name}' is already registered`);
+    }
+    this.authenticators.set(name, authenticator);
+  }
+
+  addToRightsTree(scopeRoot: string, branch: AppRightsTree) {
     if (this.roots[scopeRoot]) {
       throw new Error(`Rights tree already has a '${scopeRoot}' branch`);
     }
     this.roots[scopeRoot] = branch;
   }
+
+  /**
+   * The first non-null answer wins, so a `false` (bad credentials) stops the
+   * chain; `null` from every authenticator means an anonymous caller.
+   */
+  async authenticate(headers: AuthHeaders, request: Request): Promise<AppIdentifiedBill | false | null> {
+    for (const authenticator of this.authenticators.values()) {
+      const result = await authenticator(headers, request);
+      if (result !== null) {
+        return result;
+      }
+    }
+    return null;
+  }
 }
 
 @Global()
-@Module({ providers: [RightsTreeRegistry], exports: [RightsTreeRegistry] })
-export class RightsTreeModule {}
+@Module({ providers: [AuthxRegistry], exports: [AuthxRegistry] })
+export class AuthxModule {}
 ```
 
-**3. Register a branch from the service that owns the resource.**
+**3. Plug in an authenticator for each kind of caller.** Each one claims
+requests by a different header, so the order they register in doesn't matter.
+
+```ts
+// user.authenticator.ts
+import { Injectable } from '@nestjs/common';
+import { type AuthHeaders, AuthxRegistry } from './authx.registry';
+import { UserBill } from './identity';
+import { SessionService } from './session.service';
+
+@Injectable()
+export class UserAuthenticator {
+  constructor(registry: AuthxRegistry, private readonly sessions: SessionService) {
+    registry.addAuthenticator('user', headers => this.authenticate(headers));
+  }
+
+  private async authenticate(headers: AuthHeaders): Promise<UserBill | false | null> {
+    const token = headers.authorization;
+    if (typeof token !== 'string') {
+      return null;
+    }
+    const user = await this.sessions.userForToken(token);
+    if (!user) {
+      return false;
+    }
+    return new UserBill(user, token, user.admin ? ['**/*'] : ['workouts/**/*']);
+  }
+}
+```
+
+Internal services authenticate with a per-service shared secret, and their
+grants come from the database, so a service's access can be tightened without a
+deploy:
+
+```ts
+// internal-service.authenticator.ts
+import { timingSafeEqual } from 'node:crypto';
+import { Injectable } from '@nestjs/common';
+import { type AuthHeaders, AuthxRegistry } from './authx.registry';
+import { InternalServiceBill } from './identity';
+import { InternalServicesConfig } from './internal-services.config';
+import { ServiceScopeRepository } from './service-scope.repository';
+
+const SERVICE_NAME_HEADER = 'x-service-name';
+const SERVICE_KEY_HEADER = 'x-service-key';
+
+@Injectable()
+export class InternalServiceAuthenticator {
+  constructor(
+    registry: AuthxRegistry,
+    private readonly config: InternalServicesConfig,
+    private readonly scopes: ServiceScopeRepository,
+  ) {
+    registry.addAuthenticator('internal-service', headers => this.authenticate(headers));
+  }
+
+  private async authenticate(headers: AuthHeaders): Promise<InternalServiceBill | false | null> {
+    const serviceName = headers[SERVICE_NAME_HEADER];
+    if (serviceName === undefined) {
+      return null;
+    }
+    const key = headers[SERVICE_KEY_HEADER];
+    const secret = typeof serviceName === 'string' ? this.config.secrets[serviceName] : undefined;
+    if (typeof serviceName !== 'string' || typeof key !== 'string' || !secret || !safeEqual(key, secret)) {
+      return false;
+    }
+    // e.g. SELECT scope FROM service_scopes WHERE service_name = $1
+    return new InternalServiceBill(serviceName, null, await this.scopes.scopesFor(serviceName));
+  }
+}
+
+function safeEqual(a: string, b: string) {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+```
+
+The same approach works for people who sign in through OIDC: store scopes per
+identity-provider group, and grant a user the union of the scopes for the groups
+in their token. Supporting another kind of caller means adding another
+authenticator; nothing else changes.
+
+**4. Register a branch from the service that owns the resource.**
 
 ```ts
 // workouts.service.ts
 import { Injectable } from '@nestjs/common';
-import { RightsTreeRegistry } from './rights-tree.registry';
+import { AuthxRegistry } from './authx.registry';
 import { WorkoutRepository } from './workout.repository';
 
 @Injectable()
 export class WorkoutsService {
-  constructor(registry: RightsTreeRegistry, private readonly workouts: WorkoutRepository) {
-    registry.register('workouts', {
+  constructor(registry: AuthxRegistry, private readonly workouts: WorkoutRepository) {
+    registry.addToRightsTree('workouts', {
       children: {
         // workouts/list
         list: { right: () => true },
@@ -104,9 +231,16 @@ export class WorkoutsService {
       // workouts/<workoutId>/view
       wildcard: {
         // `context` can deny early; only a `right` can allow.
-        context: async (workoutId, req) =>
-          req.identity.isIdentified &&
-          (req.identity.principal.admin || (await this.workouts.ownerOf(workoutId)) === req.identity.principal.id),
+        context: async (workoutId, req) => {
+          const identity = req.identity;
+          if (identity.isAnonymous) {
+            return false;
+          }
+          if (identity.kind === 'service') {
+            return true; // services are limited by their grants alone
+          }
+          return identity.principal.admin || (await this.workouts.ownerOf(workoutId)) === identity.principal.id;
+        },
         children: { view: { right: () => true } },
       },
     });
@@ -114,13 +248,13 @@ export class WorkoutsService {
 }
 ```
 
-**4. Decorate the controller.**
+**5. Decorate the controller.**
 
 ```ts
 // workouts.controller.ts
 import { Controller, Get, Param } from '@nestjs/common';
 import { AuthnOptional, AuthnSkip, AuthzScope, Identity, type IdentifiedExpressRequest } from '@pvogel/nestjs-auth';
-import type { AppIdentity, UserBill } from './identity';
+import type { AppIdentifiedBill, AppIdentity } from './identity';
 
 @Controller('workouts')
 export class WorkoutsController {
@@ -139,45 +273,47 @@ export class WorkoutsController {
 
   @Get(':workoutId')
   @AuthzScope((req: IdentifiedExpressRequest<AppIdentity>) => `workouts/${req.params.workoutId}/view`)
-  get(@Param('workoutId') workoutId: string, @Identity() identity: UserBill) {
-    return { workoutId, viewer: identity.principal.id };
+  get(@Param('workoutId') workoutId: string, @Identity() identity: AppIdentifiedBill) {
+    const viewer = identity.kind === 'user' ? identity.principal.id : `service:${identity.principal}`;
+    return { workoutId, viewer };
   }
 }
 ```
 
-**5. Install the interceptor globally.**
+**6. Install the interceptor globally.** It hands authentication to the
+registry's chain and authorization to its tree. The authenticators aren't
+injected anywhere; NestJS constructs every provider at startup, which is when
+they plug themselves in.
 
 ```ts
 // app.module.ts
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { HttpAuthxInterceptor } from '@pvogel/nestjs-auth';
-import { type AppIdentity, UserBill } from './identity';
-import { RightsTreeModule, RightsTreeRegistry } from './rights-tree.registry';
+import { AuthxModule, AuthxRegistry } from './authx.registry';
+import type { AppIdentifiedBill, AppIdentity } from './identity';
+import { InternalServiceAuthenticator } from './internal-service.authenticator';
+import { InternalServicesConfig } from './internal-services.config';
+import { ServiceScopeRepository } from './service-scope.repository';
 import { SessionService } from './session.service';
+import { UserAuthenticator } from './user.authenticator';
 import { WorkoutsModule } from './workouts.module';
 
 @Module({
-  imports: [RightsTreeModule, WorkoutsModule],
+  imports: [AuthxModule, WorkoutsModule],
   providers: [
+    InternalServicesConfig,
+    ServiceScopeRepository,
     SessionService,
+    InternalServiceAuthenticator,
+    UserAuthenticator,
     {
       provide: APP_INTERCEPTOR,
-      inject: [RightsTreeRegistry, SessionService],
-      useFactory: (registry: RightsTreeRegistry, sessions: SessionService) =>
-        new HttpAuthxInterceptor<AppIdentity, UserBill>({
+      inject: [AuthxRegistry],
+      useFactory: (registry: AuthxRegistry) =>
+        new HttpAuthxInterceptor<AppIdentity, AppIdentifiedBill>({
           authn: {
-            principalFn: async headers => {
-              const token = headers.authorization;
-              if (typeof token !== 'string') {
-                return null; // anonymous
-              }
-              const user = await sessions.userForToken(token);
-              if (!user) {
-                return false; // bad credentials: 401
-              }
-              return new UserBill(user, token, user.admin ? ['**/*'] : ['workouts/**/*']);
-            },
+            principalFn: (headers, _cookies, request) => registry.authenticate(headers, request),
             anonymousScopes: ['workouts/list'],
           },
           authz: { tree: registry.tree },
@@ -188,25 +324,30 @@ import { WorkoutsModule } from './workouts.module';
 export class AppModule {}
 ```
 
-The result:
+The result, where the `billing` service's stored grants are `workouts/*/view`
+and the `reporting` service's are `workouts/list`:
 
 | Request | Response |
 |---|---|
-| `GET /workouts`, no token | 200 (anonymous scopes allow `workouts/list`) |
-| `GET /workouts/42`, no token | 401 (authentication required) |
-| `GET /workouts/42`, invalid token | 401 |
+| `GET /workouts`, no credentials | 200 (anonymous scopes allow `workouts/list`) |
+| `GET /workouts/42`, no credentials | 401 (authentication required) |
+| `GET /workouts/42`, invalid user token | 401 |
 | `GET /workouts/42`, user who doesn't own workout 42 | 403 (rights tree denies) |
 | `GET /workouts/42`, owner or admin | 200 |
+| `GET /workouts/42`, `billing` service | 200 |
+| `GET /workouts/42`, `reporting` service | 403 (not in its grants) |
+| `GET /workouts/42`, `billing` with the wrong key, or an unknown service | 401 |
 | A handler with no `@AuthzScope()` | 500 (the handler never runs) |
 
-> **Keep the registry, the services that register branches, and the
-> interceptor provider at NestJS's default (singleton) scope.** Branches are
-> registered in constructors, and a request-scoped provider is constructed on
-> every request. So is anything that injects one, because request scope
-> propagates up the dependency chain. That would re-register branches (an error
-> with the registry above) and rebuild the interceptor for every call. Rights
-> functions are passed the request, so they don't need request-scoped
-> dependencies to use request data.
+> **Keep the registry, the authenticators, the services that register
+> branches, and the interceptor provider at NestJS's default (singleton)
+> scope.** They plug themselves in from their constructors, and a
+> request-scoped provider is constructed on every request. So is anything that
+> injects one, because request scope propagates up the dependency chain. That
+> would re-register them on every call (an error with the registry above) and
+> rebuild the interceptor each time. Authenticators and rights functions are
+> passed the request data they need, so they don't need request-scoped
+> dependencies.
 
 ## Logging ##
 `HttpAuthxInterceptor` accepts an optional `logger` implementing `AuthxLogger`:
