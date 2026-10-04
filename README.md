@@ -1,5 +1,6 @@
 # `@pvogel/nestjs-auth` #
-[![npm version](https://badge.fury.io/js/%40pvogel%2Fnestjs-auth.svg)](https://badge.fury.io/js/%40pvogel%2Fnestjs-auth)
+[![npm version](https://img.shields.io/npm/v/%40pvogel%2Fnestjs-auth)](https://www.npmjs.com/package/@pvogel/nestjs-auth)
+[![CI](https://github.com/pvogel1967/nestjs-auth/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pvogel1967/nestjs-auth/actions/workflows/ci.yml)
 
 Authentication and authorization for NestJS 10+ HTTP apps: one interceptor, a
 handful of decorators, and a rights tree that your own services fill in.
