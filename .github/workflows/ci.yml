@@ -14,21 +14,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # nothing here pushes to git, so don't leave the token configured
+          persist-credentials: false
       - uses: jdx/mise-action@v5
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm check:exports
 
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # nothing here pushes to git, so don't leave the token configured
+          persist-credentials: false
+      - uses: jdx/mise-action@v5
+      # builds the library, which the example uses through `file:..`
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
+        working-directory: example
+      - run: pnpm test
+        working-directory: example
+
   nestjs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        project: [nest10, nest11, nest12]
+        project: [nest10.0.0, nest10, nest11, nest12, nest12-yarn-berry]
     name: nestjs (${{ matrix.project }})
     steps:
       - uses: actions/checkout@v7
+        with:
+          # nothing here pushes to git, so don't leave the token configured
+          persist-credentials: false
       - uses: jdx/mise-action@v5
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:matrix ${{ matrix.project }}

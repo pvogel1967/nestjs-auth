@@ -1,0 +1,10 @@
+# Each matrix project resolves the latest release of its NestJS major against
+# the freshly packed tarball, so there's no lockfile to keep in sync.
+lockfile: false
+allowBuilds:
+  '@nestjs/core': false
+# @nestjs/common 10.0.0's file validators narrow an optional parameter, which
+# fails strict declaration checking; this backports the fix from 10.0.1 so the
+# library's typings can be checked against 10.0.0 with skipLibCheck off.
+patchedDependencies:
+  '@nestjs/common@10.0.0': patches/@nestjs__common@10.0.0.patch

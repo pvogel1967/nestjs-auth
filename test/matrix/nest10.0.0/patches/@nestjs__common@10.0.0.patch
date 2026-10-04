@@ -1,0 +1,22 @@
+diff --git a/pipes/file/file-type.validator.d.ts b/pipes/file/file-type.validator.d.ts
+index a2b7119a6542d2e10b8eefcadb90aa5913aee3d1..e84dd941f6b9ea9cb58865b3c2ad5899385c7765 100644
+--- a/pipes/file/file-type.validator.d.ts
++++ b/pipes/file/file-type.validator.d.ts
+@@ -16,5 +16,5 @@ export type FileTypeValidatorOptions = {
+  */
+ export declare class FileTypeValidator extends FileValidator<FileTypeValidatorOptions> {
+     buildErrorMessage(): string;
+-    isValid<TFile extends IFile = any>(file: TFile): boolean;
++    isValid<TFile extends IFile = any>(file?: TFile): boolean;
+ }
+diff --git a/pipes/file/max-file-size.validator.d.ts b/pipes/file/max-file-size.validator.d.ts
+index c4bb6453e7aca67d4c08bfbf0c05aa0755e977cf..452a3adf50be39dd644a79c9b37b10cc8bb3eec3 100644
+--- a/pipes/file/max-file-size.validator.d.ts
++++ b/pipes/file/max-file-size.validator.d.ts
+@@ -13,5 +13,5 @@ export type MaxFileSizeValidatorOptions = {
+  */
+ export declare class MaxFileSizeValidator extends FileValidator<MaxFileSizeValidatorOptions> {
+     buildErrorMessage(): string;
+-    isValid<TFile extends IFile = any>(file: TFile): boolean;
++    isValid<TFile extends IFile = any>(file?: TFile): boolean;
+ }

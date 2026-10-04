@@ -1,15 +1,28 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const lib = require('@pvogel/nestjs-auth');
+const { runModuleTests } = require('./module.cjs');
+const { runRejectionTests } = require('./rejections.cjs');
 const { runScenario, startApp } = require('./scenario.cjs');
 
-const nest = { common: require('@nestjs/common'), core: require('@nestjs/core') };
+const nest = {
+  common: require('@nestjs/common'),
+  core: require('@nestjs/core'),
+  fastify: require('@nestjs/platform-fastify'),
+  rxjs: require('rxjs'),
+};
 
 test('require() resolves the CommonJS build', () => {
   assert.match(require.resolve('@pvogel/nestjs-auth'), /dist\/cjs\/index\.js$/);
 });
 
 test('CommonJS build against NestJS', t => runScenario(t, nest, lib));
+test('CommonJS build through AuthxModule', t => runScenario(t, nest, lib, { wiring: 'module' }));
+test('AuthxModule on the CommonJS build', t => runModuleTests(t, nest, lib));
+test('CommonJS build on Fastify', t => runScenario(t, nest, lib, { platform: 'fastify' }));
+test('CommonJS build through AuthxModule on Fastify', t => runScenario(t, nest, lib, { wiring: 'module', platform: 'fastify' }));
+test('rejections on Express (CommonJS build)', t => runRejectionTests(t, nest, lib, 'express'));
+test('rejections on Fastify (CommonJS build)', t => runRejectionTests(t, nest, lib, 'fastify'));
 
 test('CommonJS interceptor accepts bills from the ESM build', async t => {
   const esm = await import('@pvogel/nestjs-auth');

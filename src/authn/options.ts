@@ -1,3 +1,4 @@
+import type { ExecutionContext } from '@nestjs/common';
 import type { Request as ExpressRequest } from 'express';
 
 import { IdentifiedBillBase } from '../types.js';
@@ -8,13 +9,17 @@ export type PrincipalFnRet<TIdentifiedBill extends IdentifiedBillBase> =
   | null
   | false;
 
-export type PrincipalFn<TIdentifiedBill extends IdentifiedBillBase> = (
+/** `TRequest` is the platform's request: Express's `Request` by default, or `FastifyRequest`. */
+export type PrincipalFn<TIdentifiedBill extends IdentifiedBillBase, TRequest = ExpressRequest> = (
   headers: StringTo<string | Array<string> | undefined>,
   cookies: StringTo<string>,
-  request: ExpressRequest,
+  request: TRequest,
+  // Lets credential sources that work from Nest's context (handler, class,
+  // transport) plug in without re-deriving it from the request.
+  context: ExecutionContext,
 ) => PrincipalFnRet<TIdentifiedBill> | Promise<PrincipalFnRet<TIdentifiedBill>>;
 
-export interface HttpAuthnOptions<TIdentifiedBill extends IdentifiedBillBase> {
+export interface HttpAuthnOptions<TIdentifiedBill extends IdentifiedBillBase, TRequest = ExpressRequest> {
   /**
    * The function that `nestjs-auth` should use to determine a principal from
    * a request. This might be a session token lookup, decoding a JWT (but please
@@ -35,7 +40,7 @@ export interface HttpAuthnOptions<TIdentifiedBill extends IdentifiedBillBase> {
    *    _invalid_ (as opposed to _nonexistent_), such as when a user attempts
    *    to use an expired session token.
    */
-  principalFn: PrincipalFn<TIdentifiedBill>;
+  principalFn: PrincipalFn<TIdentifiedBill, TRequest>;
 
   /**
    * The set of scopes to grant to an anonymous identity.
